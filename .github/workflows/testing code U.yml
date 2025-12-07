@@ -1,0 +1,101 @@
+name: testing code U
+on: [workflow_dispatch]
+jobs:
+  tunnel:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo DEBIAN_FRONTEND=noninteractive apt install -y \
+            xfce4 xfce4-goodies xrdp git \
+            firefox net-tools curl dbus-x11
+          
+      - name: Install Tailscale
+        run: |
+          curl -fsSL https://tailscale.com/install.sh | sh
+          
+      - name: Start Tailscale
+        run: |
+          sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTHKEY }} --hostname=github-rdp-${{ github.run_id }}
+          sleep 5
+          
+      - name: Configure RDP user
+        run: |
+          # Create user with password
+          echo "runner:password" | sudo chpasswd
+          
+          # Add user to necessary groups
+          sudo usermod -aG sudo runner
+          
+      - name: Configure XRDP
+        run: |
+          # Configure XRDP to use XFCE
+          echo "xfce4-session" > ~/.xsession
+          chmod +x ~/.xsession
+          
+          # Configure XRDP
+          sudo sed -i 's/3389/3389/g' /etc/xrdp/xrdp.ini
+          sudo sed -i 's/max_bpp=32/max_bpp=128/g' /etc/xrdp/xrdp.ini
+          sudo sed -i 's/xserverbpp=24/xserverbpp=128/g' /etc/xrdp/xrdp.ini
+          
+          # Enable color depth
+          echo "allowed_users=anybody" | sudo tee -a /etc/X11/Xwrapper.config
+          
+      - name: Start XRDP service
+        run: |
+          sudo systemctl enable xrdp
+          sudo systemctl start xrdp
+          sleep 5
+          
+      - name: Verify XRDP service
+        run: |
+          echo "Checking XRDP status:"
+          sudo systemctl status xrdp --no-pager
+          echo ""
+          echo "Checking listening ports:"
+          sudo netstat -tlnp | grep 3389
+          
+      - name: Get Tailscale connection info
+        run: |
+          TAILSCALE_IP=$(tailscale ip -4)
+          
+          echo "============================================"
+          echo "🔗 TAILSCALE RDP CONNECTION"
+          echo "============================================"
+          echo ""
+          echo "🖥️  RDP Address: ${TAILSCALE_IP}:3389"
+          echo "🖥️  Alternative: github-rdp-${{ github.run_id }}:3389"
+          echo ""
+          echo "👤 Username: runner"
+          echo "🔑 Password: password"
+          echo ""
+          echo "📋 CONNECTION METHODS:"
+          echo ""
+          echo "1️⃣  Using xfreerdp (Linux/Mac):"
+          echo "   xfreerdp /v:${TAILSCALE_IP}:3389 /u:runner /p:'password' /dynamic-resolution"
+          echo ""
+          echo "2️⃣  Using Windows Remote Desktop:"
+          echo "   - Open Remote Desktop Connection"
+          echo "   - Computer: ${TAILSCALE_IP}:3389"
+          echo "   - Username: runner"
+          echo "   - Password: password"
+          echo ""
+          echo "3️⃣  Using Microsoft Remote Desktop (Mac):"
+          echo "   - Add PC: ${TAILSCALE_IP}"
+          echo "   - User account: runner / password"
+          echo ""
+          echo "4️⃣  Using Remmina (Linux):"
+          echo "   - Protocol: RDP"
+          echo "   - Server: ${TAILSCALE_IP}:3389"
+          echo "   - Username: runner"
+          echo "   - Password: password"
+          echo ""
+          echo "🔍 To see this machine in Tailscale:"
+          echo "   Visit: https://login.tailscale.com/admin/machines"
+          echo "   Look for: github-rdp-${{ github.run_id }}"
+          echo "============================================"
+          
+          echo ""
+          echo "✅ Keeping alive for 6 hours..."
+          sleep 21600
