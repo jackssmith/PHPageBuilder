@@ -170,7 +170,7 @@ class Page implements PageContract
             return $this->attributes[$property] ?? null;
         }
 
-        return null;
+        return $this;
     }
 
     /**
