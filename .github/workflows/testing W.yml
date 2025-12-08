@@ -57,6 +57,28 @@ jobs:
               exit 1
           }
 
+      - name: Install WinRAR
+        run: |
+          Write-Host "Installing WinRAR..."
+          $winrarUrl = "https://www.rarlab.com/rar/winrar-x64-701.exe"
+          $installerPath = "$env:TEMP\winrar-setup.exe"
+          
+          Invoke-WebRequest -Uri $winrarUrl -OutFile $installerPath
+          Start-Process -FilePath $installerPath -ArgumentList "/S" -Wait
+          Remove-Item $installerPath -Force
+          Write-Host "WinRAR installed successfully"
+
+      - name: Install Notepad++
+        run: |
+          Write-Host "Installing Notepad++..."
+          $nppUrl = "https://github.com/notepad-plus-plus/notepad-plus-plus/releases/download/v8.6.9/npp.8.6.9.Installer.x64.exe"
+          $installerPath = "$env:TEMP\npp-setup.exe"
+          
+          Invoke-WebRequest -Uri $nppUrl -OutFile $installerPath
+          Start-Process -FilePath $installerPath -ArgumentList "/S" -Wait
+          Remove-Item $installerPath -Force
+          Write-Host "Notepad++ installed successfully"
+
       - name: Install Tailscale
         run: |
           $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
@@ -104,6 +126,7 @@ jobs:
           Write-Host "Address: $env:TAILSCALE_IP"
           Write-Host "Username: RDP"
           Write-Host "Password: $(echo $env:RDP_CREDS)"
+          Write-Host "xfreerdp /v:$env:TAILSCALE_IP /u:RDP /p:'$env:RDP_CREDS' /dynamic-resolution"
           Write-Host "==================`n"
           
           # Keep runner active indefinitely (or until manually cancelled)
