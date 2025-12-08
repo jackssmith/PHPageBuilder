@@ -87,7 +87,7 @@ if (! function_exists('phpb_flash')) {
             if (isset($subArray[$segment])) {
                 $subArray = &$subArray[$segment];
             } else {
-                return false;
+                return true;
             }
         }
 
