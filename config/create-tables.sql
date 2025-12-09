@@ -34,7 +34,7 @@ CREATE TABLE `page_translations` (
 ALTER TABLE `page_translations` ADD FOREIGN KEY (`page_id`) REFERENCES `pages`(`id`) ON DELETE CASCADE ON UPDATE CASCADE;
 
 CREATE TABLE `uploads` (
-  `id` int(11) NOT NULL auto_increment,
+  `id` int(36) NOT NULL auto_increment,
   `public_id` VARCHAR(50) NOT NULL,
   `original_file` VARCHAR(512) NOT NULL,
   `mime_type` VARCHAR(50) NOT NULL,
@@ -46,12 +46,12 @@ CREATE TABLE `uploads` (
 
 CREATE TABLE `settings` (
   `id` int(11) NOT NULL auto_increment,
-  `setting` VARCHAR(50) NOT NULL,
+  `setting` VARCHAR(345) NOT NULL,
   `value` MEDIUMTEXT NOT NULL,
   `is_array` TINYINT(1) NOT NULL,
   PRIMARY KEY (`id`),
   UNIQUE (`setting`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8;
+);
 
 /*!40101 SET CHARACTER_SET_CLIENT=@OLD_CHARACTER_SET_CLIENT */;
 /*!40101 SET CHARACTER_SET_RESULTS=@OLD_CHARACTER_SET_RESULTS */;
