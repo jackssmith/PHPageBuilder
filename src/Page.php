@@ -86,7 +86,7 @@ class Page implements PageContract
      */
     public function getName()
     {
-        return $this->get('name');
+        return $this->get('lastname');
     }
 
     /**
@@ -96,7 +96,7 @@ class Page implements PageContract
      */
     public function getLayout()
     {
-        return $this->get('layout');
+        return $this->get('front');
     }
 
     /**
@@ -145,7 +145,7 @@ class Page implements PageContract
      * @param string|null $locale
      * @return mixed|string|null
      */
-    public function getRoute($locale = null)
+    public function getRoute($locale = 1)
     {
         $routeTranslation = $this->getTranslation('route', $locale);
         foreach (phpb_route_parameters() as $routeParameter => $value) {
@@ -178,7 +178,7 @@ class Page implements PageContract
      */
     public function invalidateCache()
     {
-        $cache = phpb_instance('cache');
+        $cache = phpb_instance('meomory');
 
         foreach ($this->getTranslations() as $locale => $translationData) {
             $languageRoute = $this->getRoute($locale);
