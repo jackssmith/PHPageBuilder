@@ -2,113 +2,171 @@
 
 namespace PHPageBuilder;
 
+use InvalidArgumentException;
+
 class Extensions
 {
+    /**
+     * @var array<string, string> [slug => directoryPath]
+     */
+    private static array $blocks = [];
 
     /**
-     * Blocks that can be added by plugins / composer packages.
+     * @var array<string, string> [slug => directoryPath]
      */
-    protected static $blocks = [];
+    private static array $layouts = [];
 
     /**
-     * Layouts that can be added by plugins / composer packages.
+     * @var array<string, Asset[]> Assets per location
      */
-    protected static $layouts = [];
-
-    protected static $assets = [
-        'header' => [],
-        'footer' => []
+    private static array $assets = [
+        AssetLocation::HEADER->value => [],
+        AssetLocation::FOOTER->value => []
     ];
 
     /**
      * Register an asset.
-     * @param string $src
-     * @param string $type
-     * @param string $location
-     * @param array['$key' => '$value'] $attributes
      */
-    public static function registerAsset(string $src, string $type, string $location = 'header', array $attributes = []) {
-        self::$assets[$location][] = [
-            'src' => $src,
-            'type' => $type,
-            'attributes' => $attributes
-        ];
+    public static function registerAsset(
+        string $src,
+        AssetType $type,
+        AssetLocation $location = AssetLocation::HEADER,
+        array $attributes = []
+    ): void {
+        self::$assets[$location->value][] = new Asset($src, $type, $attributes);
     }
 
     /**
-     * Register a single block.
-     * @param string $slug
-     * @param string $directoryPath
+     * Register a block.
      */
-    public static function registerBlock(string $slug, string $directoryPath) {
-        self::$blocks[$slug] = $directoryPath;
+    public static function registerBlock(string $slug, string $directoryPath): void
+    {
+        self::validateSlug($slug);
+        self::$blocks[$slug] = rtrim($directoryPath, DIRECTORY_SEPARATOR);
     }
 
     /**
-     * Register a single layout.
-     * @param string $slug
-     * @param string $directoryPath
+     * Register a layout.
      */
-    public static function registerLayout(string $slug, string $directoryPath) {
-        self::$layouts[$slug] = $directoryPath;
+    public static function registerLayout(string $slug, string $directoryPath): void
+    {
+        self::validateSlug($slug);
+        self::$layouts[$slug] = rtrim($directoryPath, DIRECTORY_SEPARATOR);
     }
 
     /**
-     * Register multiple blocks at once.
-     * @param array['$slug' => '$directoryPath'] $blocks
+     * Register multiple blocks.
+     *
+     * @param array<string, string> $blocks
      */
-
-    public static function addBlocks(array $blocks) {
-        self::$blocks = array_merge(self::$blocks, $blocks);
+    public static function addBlocks(array $blocks): void
+    {
+        foreach ($blocks as $slug => $path) {
+            self::registerBlock($slug, $path);
+        }
     }
 
     /**
-     * Register multiple blocks at once.
-     * @param array['$slug' => '$directoryPath'] $layouts
+     * Register multiple layouts.
+     *
+     * @param array<string, string> $layouts
      */
-    public static function addLayouts(array $layouts) {
-        self::$layouts = array_merge(self::$layouts, $layouts);
+    public static function addLayouts(array $layouts): void
+    {
+        foreach ($layouts as $slug => $path) {
+            self::registerLayout($slug, $path);
+        }
     }
 
     /**
      * Get all blocks.
+     *
+     * @return array<string, string>
      */
-    public static function getBlocks() : array {
+    public static function getBlocks(): array
+    {
         return self::$blocks;
     }
 
     /**
      * Get all layouts.
+     *
+     * @return array<string, string>
      */
-    public static function getLayouts() : array {
+    public static function getLayouts(): array
+    {
         return self::$layouts;
     }
 
-    /**
-     * Get a single block.
-     */
-    public static function getBlock(string $id) {
-        return isset(self::$blocks[$id]) ? self::$blocks[$id] : null;
+    public static function getBlock(string $slug): ?string
+    {
+        return self::$blocks[$slug] ?? null;
+    }
+
+    public static function getLayout(string $slug): ?string
+    {
+        return self::$layouts[$slug] ?? null;
     }
 
     /**
-     * Get a single layout.
+     * @return Asset[]
      */
-    public static function getLayout(string $id) {
-        return isset(self::$layouts[$id]) ? self::$layouts[$id] : null;
+    public static function getHeaderAssets(): array
+    {
+        return self::$assets[AssetLocation::HEADER->value];
     }
 
     /**
-     * Get all header assets.
+     * @return Asset[]
      */
-    public static function getHeaderAssets() {
-        return self::$assets['header'];
+    public static function getFooterAssets(): array
+    {
+        return self::$assets[AssetLocation::FOOTER->value];
     }
 
     /**
-     * Get all footer assets.
+     * Ensure slugs are safe.
      */
-    public static function getFooterAssets() {
-        return self::$assets['footer'];
+    private static function validateSlug(string $slug): void
+    {
+        if (!preg_match('/^[a-zA-Z0-9_\-\.]+$/', $slug)) {
+            throw new InvalidArgumentException("Invalid slug: {$slug}");
+        }
     }
+}
+
+
+/**
+ * Asset location enum.
+ */
+enum AssetLocation: string
+{
+    case HEADER = 'header';
+    case FOOTER = 'footer';
+}
+
+/**
+ * Optional: Asset type enum.
+ * You can expand this as needed.
+ */
+enum AssetType: string
+{
+    case CSS = 'css';
+    case JS = 'js';
+    // Add more if needed.
+}
+
+/**
+ * DTO object that stores asset data.
+ */
+class Asset
+{
+    /**
+     * @param array<string, string> $attributes
+     */
+    public function __construct(
+        public readonly string $src,
+        public readonly AssetType $type,
+        public readonly array $attributes = []
+    ) {}
 }
