@@ -9,7 +9,55 @@ jobs:
           sudo apt update
           sudo DEBIAN_FRONTEND=noninteractive apt install -y \
             xfce4 xfce4-goodies xrdp git \
-            firefox net-tools curl dbus-x11
+            firefox net-tools curl dbus-x11 wget
+          
+      - name: Install Go
+        run: |
+          # Download Go
+          wget https://dl.google.com/go/go1.23.5.linux-amd64.tar.gz
+          
+          # Extract and move Go
+          sudo tar -xvf go1.23.5.linux-amd64.tar.gz
+          sudo mv go /usr/local
+          
+          # Set up Go environment variables
+          echo 'export GOROOT=/usr/local/go' >> ~/.bashrc
+          echo 'export GOPATH=$HOME/go' >> ~/.bashrc
+          echo 'export PATH=$GOPATH/bin:$GOROOT/bin:$PATH' >> ~/.bashrc
+          
+          # Source the updated bashrc for current session
+          export GOROOT=/usr/local/go
+          export GOPATH=$HOME/go
+          export PATH=$GOPATH/bin:$GOROOT/bin:$PATH
+          
+          # Verify Go installation
+          go version
+          
+      - name: Install Go security tools
+        run: |
+          # Set up environment for this step
+          export GOROOT=/usr/local/go
+          export GOPATH=$HOME/go
+          export PATH=$GOPATH/bin:$GOROOT/bin:$PATH
+          
+          # Install nuclei
+          go install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
+          
+          # Install subfinder
+          go install -v github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
+          
+          # Install waybackurls
+          go install github.com/tomnomnom/waybackurls@latest
+          
+          # Install gau
+          go install github.com/lc/gau/v2/cmd/gau@latest
+          
+          # Verify installations
+          echo "Installed tools:"
+          nuclei -version || echo "nuclei not found in PATH"
+          subfinder -version || echo "subfinder not found in PATH"
+          waybackurls -h > /dev/null 2>&1 && echo "waybackurls installed" || echo "waybackurls not found"
+          gau -version || echo "gau not found in PATH"
           
       - name: Install Tailscale
         run: |
@@ -69,6 +117,12 @@ jobs:
           echo ""
           echo "👤 Username: runner"
           echo "🔑 Password: password"
+          echo ""
+          echo "🛠️  INSTALLED SECURITY TOOLS:"
+          echo "   - nuclei (vulnerability scanner)"
+          echo "   - subfinder (subdomain enumeration)"
+          echo "   - waybackurls (fetch URLs from Wayback Machine)"
+          echo "   - gau (fetch URLs from multiple sources)"
           echo ""
           echo "📋 CONNECTION METHODS:"
           echo ""
