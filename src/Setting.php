@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace PHPageBuilder;
 
 use PHPageBuilder\Contracts\SettingContract;
@@ -7,54 +9,71 @@ use PHPageBuilder\Repositories\SettingRepository;
 
 class Setting implements SettingContract
 {
-    protected static $settings;
+    /**
+     * Cached settings loaded from the database.
+     *
+     * @var array<string, mixed>|null
+     */
+    protected static ?array $settings = null;
 
     /**
-     * Load all settings from database.
+     * Load all settings from the database into memory.
      */
-    protected static function loadSettings()
+    protected static function loadSettings(): void
     {
         self::$settings = [];
-        $settingsRepository = new SettingRepository;
-        foreach ($settingsRepository->getAll() as $setting) {
-            self::$settings[$setting['setting']] = $setting['is_array'] ? explode(',', $setting['value']) : $setting['value'];
+
+        $repository = new SettingRepository();
+
+        foreach ($repository->getAll() as $setting) {
+            self::$settings[$setting['setting']] = $setting['is_array']
+                ? explode(',', $setting['value'])
+                : $setting['value'];
         }
     }
 
     /**
-     * Return the value(s) of the given setting.
+     * Ensure settings are loaded.
+     */
+    protected static function ensureLoaded(): void
+    {
+        if (self::$settings === null) {
+            self::loadSettings();
+        }
+    }
+
+    /**
+     * Get the value of a setting.
      *
      * @param string $key
-     * @return mixed|array|null
+     * @return mixed|null
      */
     public static function get(string $key)
     {
-        if (is_null(self::$settings)) {
-            self::loadSettings();
-        }
+        self::ensureLoaded();
 
-        if (isset(self::$settings[$key])) {
-            return self::$settings[$key];
-        }
-        return null;
+        return self::$settings[$key] ?? null;
     }
 
     /**
-     * Return whether the given setting exists and has the given value.
+     * Determine whether the given setting exists and matches the given value.
      *
      * @param string $key
      * @param string $value
      * @return bool
      */
-    public static function has(string $key, string $value)
+    public static function has(string $key, string $value): bool
     {
-        if (is_null(self::$settings)) {
-            self::loadSettings();
+        self::ensureLoaded();
+
+        if (!isset(self::$settings[$key])) {
+            return false;
         }
 
-        return isset(self::$settings[$key]) && (
-            (is_array(self::$settings[$key]) && in_array($value, self::$settings[$key])) ||
-            (! is_array(self::$settings[$key]) && self::$settings[$key] === $value)
-        );
+        $setting = self::$settings[$key];
+
+        return is_array($setting)
+            ? in_array($value, $setting, true)
+            : $setting === $value;
     }
 }
