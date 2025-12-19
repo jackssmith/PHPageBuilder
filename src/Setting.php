@@ -26,9 +26,18 @@ class Setting implements SettingContract
         $repository = new SettingRepository();
 
         foreach ($repository->getAll() as $setting) {
-            self::$settings[$setting['setting']] = $setting['is_array']
-                ? explode(',', $setting['value'])
-                : $setting['value'];
+            $value = $setting['value'];
+
+            if ((bool) $setting['is_array']) {
+                $value = array_values(
+                    array_filter(
+                        array_map('trim', explode(',', (string) $value)),
+                        static fn ($v) => $v !== ''
+                    )
+                );
+            }
+
+            self::$settings[$setting['setting']] = $value;
         }
     }
 
@@ -43,30 +52,59 @@ class Setting implements SettingContract
     }
 
     /**
+     * Reload all settings from the database.
+     */
+    public static function reload(): void
+    {
+        self::$settings = null;
+        self::ensureLoaded();
+    }
+
+    /**
      * Get the value of a setting.
      *
      * @param string $key
-     * @return mixed|null
+     * @param mixed $default
+     * @return mixed
      */
-    public static function get(string $key)
+    public static function get(string $key, mixed $default = null): mixed
     {
         self::ensureLoaded();
 
-        return self::$settings[$key] ?? null;
+        return self::$settings[$key] ?? $default;
+    }
+
+    /**
+     * Set or override a setting value at runtime.
+     *
+     * @param string $key
+     * @param mixed $value
+     */
+    public static function set(string $key, mixed $value): void
+    {
+        self::ensureLoaded();
+
+        self::$settings[$key] = $value;
+    }
+
+    /**
+     * Determine whether the given setting exists.
+     */
+    public static function exists(string $key): bool
+    {
+        self::ensureLoaded();
+
+        return array_key_exists($key, self::$settings);
     }
 
     /**
      * Determine whether the given setting exists and matches the given value.
-     *
-     * @param string $key
-     * @param string $value
-     * @return bool
      */
-    public static function has(string $key, string $value): bool
+    public static function has(string $key, mixed $value): bool
     {
         self::ensureLoaded();
 
-        if (!isset(self::$settings[$key])) {
+        if (!array_key_exists($key, self::$settings)) {
             return false;
         }
 
