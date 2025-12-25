@@ -25,14 +25,21 @@ class Setting implements SettingContract
 
         $repository = new SettingRepository();
 
-        foreach ($repository->getAll() as $setting) {
+        // Ensure the repository returns valid data
+        $settingsData = $repository->getAll();
+        if (empty($settingsData)) {
+            return; // No settings to load
+        }
+
+        foreach ($settingsData as $setting) {
             $value = $setting['value'];
 
+            // If the value is an array (stored as a comma-separated string), process it
             if ((bool) $setting['is_array']) {
                 $value = array_values(
                     array_filter(
                         array_map('trim', explode(',', (string) $value)),
-                        static fn ($v) => $v !== ''
+                        static fn($v) => $v !== ''
                     )
                 );
             }
@@ -42,7 +49,7 @@ class Setting implements SettingContract
     }
 
     /**
-     * Ensure settings are loaded.
+     * Ensure settings are loaded into memory.
      */
     protected static function ensureLoaded(): void
     {
@@ -63,22 +70,23 @@ class Setting implements SettingContract
     /**
      * Get the value of a setting.
      *
-     * @param string $key
-     * @param mixed $default
-     * @return mixed
+     * @param string $key The setting key.
+     * @param mixed $default The default value if the setting doesn't exist.
+     * @return mixed The value of the setting.
      */
     public static function get(string $key, mixed $default = null): mixed
     {
         self::ensureLoaded();
 
+        // Return setting if exists, otherwise default
         return self::$settings[$key] ?? $default;
     }
 
     /**
      * Set or override a setting value at runtime.
      *
-     * @param string $key
-     * @param mixed $value
+     * @param string $key The setting key.
+     * @param mixed $value The value to set.
      */
     public static function set(string $key, mixed $value): void
     {
@@ -88,7 +96,10 @@ class Setting implements SettingContract
     }
 
     /**
-     * Determine whether the given setting exists.
+     * Determine if the given setting exists.
+     *
+     * @param string $key The setting key.
+     * @return bool True if the setting exists, false otherwise.
      */
     public static function exists(string $key): bool
     {
@@ -98,20 +109,21 @@ class Setting implements SettingContract
     }
 
     /**
-     * Determine whether the given setting exists and matches the given value.
+     * Determine whether the given setting exists and matches the provided value.
+     *
+     * @param string $key The setting key.
+     * @param mixed $value The value to match.
+     * @return bool True if the setting exists and matches, false otherwise.
      */
     public static function has(string $key, mixed $value): bool
     {
         self::ensureLoaded();
 
-        if (!array_key_exists($key, self::$settings)) {
-            return false;
-        }
-
-        $setting = self::$settings[$key];
-
-        return is_array($setting)
-            ? in_array($value, $setting, true)
-            : $setting === $value;
+        // Check if the setting exists and matches the provided value
+        return self::exists($key) && (
+            is_array(self::$settings[$key])
+                ? in_array($value, self::$settings[$key], true)
+                : self::$settings[$key] === $value
+        );
     }
 }
