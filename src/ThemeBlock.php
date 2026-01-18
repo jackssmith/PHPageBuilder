@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace PHPageBuilder;
 
 use PHPageBuilder\Contracts\ThemeContract;
@@ -10,53 +12,39 @@ use PHPageBuilder\Modules\GrapesJS\PageRenderer;
 class ThemeBlock
 {
     /**
-     * @var $config
+     * Block configuration loaded from config.php
      */
-    protected $config = [];
+    protected array $config = [];
 
     /**
-     * @var $dynamicConfig
+     * Runtime-overridable configuration
      */
-    public static $dynamicConfig = [];
+    public static array $dynamicConfig = [];
+
+    protected ThemeContract $theme;
+    protected string $blockSlug;
+    protected bool $isExtension;
+    protected ?string $extensionSlug;
 
     /**
-     * @var ThemeContract $theme
+     * Cached resolved folder path (performance improvement)
      */
-    protected $theme;
+    protected ?string $resolvedFolder = null;
 
-    /**
-     * @var string $blockSlug
-     */
-    protected $blockSlug;
-
-    /**
-     * @var bool $isExtension
-     * Determines if a block was registered by an extension.
-     */
-    protected $isExtension;
-
-    /**
-     * @var bool $extensionSlug
-     * Custom slug in case of extension.
-     */
-    protected $extensionSlug;
-
-    /**
-     * Theme constructor.
-     *
-     * @param ThemeContract $theme         the theme this block belongs to
-     * @param string $blockSlug
-     * @param bool $isExtension
-     * @param string|null $extensionSlug
-     */
-    public function __construct(ThemeContract $theme, string $blockSlug, bool $isExtension = false, string $extensionSlug = null)
-    {
+    public function __construct(
+        ThemeContract $theme,
+        string $blockSlug,
+        bool $isExtension = false,
+        ?string $extensionSlug = null
+    ) {
         $this->theme = $theme;
         $this->blockSlug = $blockSlug;
         $this->isExtension = $isExtension;
         $this->extensionSlug = $extensionSlug;
-        if (file_exists($this->getFolder() . '/config.php')) {
-            $this->config = require $this->getFolder() . '/config.php';
+
+        $configFile = $this->getFolder() . '/config.php';
+        if (is_file($configFile)) {
+            $this->config = require $configFile;
         }
 
         PageRenderer::setCanBeCached(
@@ -66,298 +54,228 @@ class ThemeBlock
     }
 
     /**
-     * Return the absolute folder path of this theme block.
-     *
-     * @return string
+     * Resolve and cache block folder path
      */
-    public function getFolder()
+    public function getFolder(): string
     {
+        if ($this->resolvedFolder !== null) {
+            return $this->resolvedFolder;
+        }
+
         if ($this->isExtension) {
-            return $this->blockSlug;
+            return $this->resolvedFolder = $this->blockSlug;
         }
-        $folder = $this->theme->getFolder() . '/blocks/archived/' . basename($this->blockSlug);
-        if (file_exists($folder)) {
-            return $folder;
+
+        $base = rtrim($this->theme->getFolder(), '/');
+        $slug = basename($this->blockSlug);
+
+        $candidates = [
+            "$base/blocks/archived/$slug",
+            "$base/blocks/elements/$slug",
+            "$base/blocks/php/$slug",
+            "$base/blocks/$slug",
+        ];
+
+        foreach ($candidates as $folder) {
+            if (is_dir($folder)) {
+                return $this->resolvedFolder = $folder;
+            }
         }
-        $folder = $this->theme->getFolder() . '/blocks/elements/' . basename($this->blockSlug);
-        if (file_exists($folder)) {
-            return $folder;
-        }
-        $folder = $this->theme->getFolder() . '/blocks/php/' . basename($this->blockSlug);
-        if (file_exists($folder)) {
-            return $folder;
-        }
-        return $this->theme->getFolder() . '/blocks/' . basename($this->blockSlug);
+
+        return $this->resolvedFolder = end($candidates);
     }
 
     /**
-     * Return the namespace to the folder of this theme block.
-     *
-     * @return string
+     * Return PHP namespace for this block
      */
-    protected function getNamespace()
+    protected function getNamespace(): string
     {
-        // return Namespace from the Config file of the Block if it is an extension. Used for Extensions.
-        if (isset( $this->config['namespace'])) {
+        if (!empty($this->config['namespace'])) {
             return $this->config['namespace'];
         }
 
-        // return Namespace from Config file if exists;
-        if (phpb_config('theme.namespace')) {
-            return phpb_config('theme.namespace');
+        if ($ns = phpb_config('theme.namespace')) {
+            return $ns;
         }
 
-        // get namespace from directory structure if not provided:
         $themesPath = phpb_config('theme.folder');
         $themesFolderName = basename($themesPath);
         $blockFolder = $this->getFolder();
+
         $namespacePath = $themesFolderName . str_replace($themesPath, '', $blockFolder);
+        $namespacePath = str_replace(['-', '_'], ' ', $namespacePath);
+        $namespacePath = ucwords($namespacePath);
+        $namespacePath = str_replace(' ', '', $namespacePath);
 
-        // convert each character after a - to uppercase
-        $namespace = implode('-', array_map('ucfirst', explode('-', $namespacePath)));
-        // convert each character after a _ to uppercase
-        $namespace = implode('_', array_map('ucfirst', explode('-', $namespace)));
-        // convert each character after a / to uppercase
-        $namespace = implode('/', array_map('ucfirst', explode('/', $namespace)));
-        // remove all dashes
-        $namespace = str_replace('-', '', $namespace);
-        // remove all underscores
-        $namespace = str_replace('_', '', $namespace);
-        // replace / by \
-        $namespace = str_replace('/', '\\', $namespace);
-
-        return $namespace;
+        return str_replace('/', '\\', $namespacePath);
     }
 
-    /**
-     * Return the controller class of this theme block.
-     *
-     * @return string
-     */
-    public function getControllerClass()
+    public function getControllerClass(): string
     {
-        if (file_exists($this->getFolder() . '/controller.php')) {
-            return $this->getNamespace() . '\\Controller';
-        }
-        return BaseController::class;
+        return $this->fileExists('controller.php')
+            ? $this->getNamespace() . '\\Controller'
+            : BaseController::class;
     }
 
-    /**
-     * Return the controller file of this theme block.
-     *
-     * @return string|null
-     */
-    public function getControllerFile()
+    public function getControllerFile(): ?string
     {
-        if (file_exists($this->getFolder() . '/controller.php')) {
-            return $this->getFolder() . '/controller.php';
-        }
-        return null;
+        return $this->fileExists('controller.php')
+            ? $this->getFolder() . '/controller.php'
+            : null;
     }
 
-    /**
-     * Return the model class of this theme block.
-     *
-     * @return string
-     */
-    public function getModelClass()
+    public function getModelClass(): string
     {
-        if (file_exists($this->getFolder() . '/model.php')) {
-            return $this->getNamespace() . '\\Model';
-        }
-        return BaseModel::class;
+        return $this->fileExists('model.php')
+            ? $this->getNamespace() . '\\Model'
+            : BaseModel::class;
     }
 
-    /**
-     * Return the model file of this theme block.
-     *
-     * @return string|null
-     */
-    public function getModelFile()
+    public function getModelFile(): ?string
     {
-        if (file_exists($this->getFolder() . '/model.php')) {
-            return $this->getFolder() . '/model.php';
-        }
-        return null;
+        return $this->fileExists('model.php')
+            ? $this->getFolder() . '/model.php'
+            : null;
     }
 
-    /**
-     * Return the view file of this theme block.
-     *
-     * @return string
-     */
-    public function getViewFile()
+    public function getViewFile(): string
     {
-        if ($this->isPhpBlock()) {
-            return $this->getFolder() . '/view.php';
-        }
-        return $this->getFolder() . '/view.html';
+        return $this->isPhpBlock()
+            ? $this->getFolder() . '/view.php'
+            : $this->getFolder() . '/view.html';
     }
 
-    /**
-     * Return the pagebuilder script file of this theme block.
-     * This script can be used to assist correct rendering of the block in the pagebuilder.
-     *
-     * @return string|null
-     */
-    public function getBuilderScriptFile()
+    public function getBuilderScriptFile(): ?string
     {
-        if (file_exists($this->getFolder() . '/builder-script.php')) {
-            return $this->getFolder() . '/builder-script.php';
-        } elseif (file_exists($this->getFolder() . '/builder-script.html')) {
-            return $this->getFolder() . '/builder-script.html';
-        } elseif (file_exists($this->getFolder() . '/builder-script.js')) {
-            return $this->getFolder() . '/builder-script.js';
-        }
-        return $this->getScriptFile();
+        return $this->getFirstExistingFile([
+            'builder-script.php',
+            'builder-script.html',
+            'builder-script.js',
+            'script.php',
+            'script.html',
+            'script.js',
+        ]);
     }
 
-    /**
-     * Return the script file of this theme block.
-     * This script can be used to assist correct rendering of the block when used on a publicly accessed web page.
-     *
-     * @return string|null
-     */
-    public function getScriptFile()
+    public function getScriptFile(): ?string
     {
-        if (file_exists($this->getFolder() . '/script.php')) {
-            return $this->getFolder() . '/script.php';
-        } elseif (file_exists($this->getFolder() . '/script.html')) {
-            return $this->getFolder() . '/script.html';
-        } elseif (file_exists($this->getFolder() . '/script.js')) {
-            return $this->getFolder() . '/script.js';
-        }
-        return null;
+        return $this->getFirstExistingFile([
+            'script.php',
+            'script.html',
+            'script.js',
+        ]);
     }
 
-    /**
-     * Return the file path of the thumbnail of this block.
-     *
-     * @return string
-     */
-    public function getThumbPath()
+    public function getThumbPath(): string
     {
-        $blockThumbsFolder = $this->theme->getFolder() . '/public/block-thumbs/';
-        return $blockThumbsFolder . md5($this->blockSlug) . '/' . md5(file_get_contents($this->getViewFile())) . '.jpg';
+        $hash = $this->getViewHash();
+        return $this->theme->getFolder()
+            . '/public/block-thumbs/'
+            . md5($this->blockSlug)
+            . "/$hash.jpg";
     }
 
-    public function getThumbUrl()
+    public function getThumbUrl(): string
     {
-        return phpb_theme_asset('block-thumbs/' . md5($this->blockSlug) . '/' . md5(file_get_contents($this->getViewFile())) . '.jpg');
+        return phpb_theme_asset(
+            'block-thumbs/' . md5($this->blockSlug) . '/' . $this->getViewHash() . '.jpg'
+        );
     }
 
-    /**
-     * Return the slug identifying this type of block.
-     *
-     * @return string
-     */
-    public function getSlug()
+    public function getSlug(): string
     {
-        return ($this->isExtension) ? $this->extensionSlug : $this->blockSlug;
+        return $this->isExtension ? (string) $this->extensionSlug : $this->blockSlug;
     }
 
-    /**
-     * Return whether this block is a block containing/allowing PHP code.
-     *
-     * @return bool
-     */
-    public function isPhpBlock()
+    public function isPhpBlock(): bool
     {
-        return file_exists($this->getFolder() . '/view.php');
+        return $this->fileExists('view.php');
     }
 
-    /**
-     * Return whether this block is a plain html block that does not contain/allow PHP code.
-     *
-     * @return bool
-     */
-    public function isHtmlBlock()
+    public function isHtmlBlock(): bool
     {
-        return (! $this->isPhpBlock());
+        return ! $this->isPhpBlock();
     }
 
-    /**
-     * The wrapper element to be used in the pagebuilder and for carrying style in case this block is a PHP block.
-     */
-    public function getWrapperElement()
+    public function getWrapperElement(): string
     {
         return $this->config['wrapper'] ?? 'div';
     }
 
     /**
-     * Return configuration with the given key (as dot-separated multidimensional array selector).
-     *
-     * @param $key
-     * @return mixed
+     * Safe config getter with dot-notation support
      */
-    public function get($key = null)
+    public function get(?string $key = null)
     {
-        if (empty($key)) {
+        if ($key === null) {
             return $this->config;
         }
-        // if no dot notation is used, return first dimension value or empty string
-        if (strpos($key, '.') === false) {
-            return $this->config[$key] ?? null;
-        }
 
-        // if dot notation is used, traverse config string
         $segments = explode('.', $key);
-        $subArray = $this->config;
+        $value = $this->config;
+
         foreach ($segments as $segment) {
-            if (isset($subArray[$segment])) {
-                $subArray = &$subArray[$segment];
-            } else {
+            if (!is_array($value) || !array_key_exists($segment, $value)) {
                 return null;
             }
+            $value = $value[$segment];
         }
 
-        return $subArray;
+        return $value;
     }
 
-    /**
-     * Replace configuration at the given key (as dot-separated multidimensional array selector) by the given value.
-     *
-     * @param $slug
-     * @param $key
-     * @param $value
-     * @return void
-     */
-    public static function set($slug, $key, $value)
+    public static function set(string $slug, ?string $key, $value): void
     {
-        if (empty($key)) {
+        if ($key === null) {
             self::$dynamicConfig[$slug] = $value;
             return;
         }
-        // if no dot notation is used, replace first dimension value or empty string
-        if (strpos($key, '.') === false) {
-            self::$dynamicConfig[$slug][$key] = $value;
-            return;
+
+        $segments = explode('.', $key);
+        $ref = &self::$dynamicConfig[$slug];
+
+        foreach ($segments as $segment) {
+            if (!isset($ref[$segment]) || !is_array($ref[$segment])) {
+                $ref[$segment] = [];
+            }
+            $ref = &$ref[$segment];
         }
 
-        // if dot notation is used, traverse config and replace at the right depth
-        $segments = explode('.', $key);
-        $subArray = &self::$dynamicConfig[$slug];
-        foreach ($segments as $i => $segment) {
-            if (isset($subArray[$segment])) {
-                if ($i === count($segments) - 1) {
-                    $subArray[$segment] = $value;
-                } else {
-                    $subArray = &$subArray[$segment];
-                }
-            } else {
-                return;
-            }
-        }
+        $ref = $value;
     }
 
-    /**
-     * Get all dynamic configuration of the block with the given slug.
-     *
-     * @param $slug
-     * @return mixed
-     */
-    public static function getDynamicConfig($slug)
+    public static function getDynamicConfig(string $slug)
     {
         return self::$dynamicConfig[$slug] ?? null;
+    }
+
+    /* -----------------------------------------------------------------
+     |  Helper methods (NEW)
+     | ----------------------------------------------------------------- */
+
+    protected function fileExists(string $file): bool
+    {
+        return is_file($this->getFolder() . '/' . $file);
+    }
+
+    protected function getFirstExistingFile(array $files): ?string
+    {
+        foreach ($files as $file) {
+            if ($this->fileExists($file)) {
+                return $this->getFolder() . '/' . $file;
+            }
+        }
+        return null;
+    }
+
+    protected function getViewHash(): string
+    {
+        static $hash = null;
+
+        if ($hash === null) {
+            $hash = md5((string) @file_get_contents($this->getViewFile()));
+        }
+
+        return $hash;
     }
 }
