@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace PHPageBuilder;
 
 use PHPageBuilder\Contracts\ThemeContract;
@@ -7,113 +9,142 @@ use PHPageBuilder\Contracts\ThemeContract;
 class ThemeLayout
 {
     /**
-     * @var $config
+     * Layout configuration.
      */
-    protected $config = [];
+    protected array $config = [];
 
     /**
-     * @var ThemeContract $theme
+     * Theme this layout belongs to.
      */
-    protected $theme;
+    protected ThemeContract $theme;
 
     /**
-     * @var string $layoutSlug
+     * Layout slug.
      */
-    protected $layoutSlug;
+    protected string $layoutSlug;
 
     /**
-     * @var bool $isExtension
-     * Determines if a block was registered by an extension.
+     * Determines if the layout was registered by an extension.
      */
-    protected $isExtension;
+    protected bool $isExtension = false;
 
     /**
-     * @var bool $extensionSlug
-     * Custom slug in case of extension.
+     * Extension slug (only used if $isExtension is true).
      */
-    protected $extensionSlug;
+    protected ?string $extensionSlug = null;
 
     /**
-     * Theme ThemeLayout.
-     *
-     * @param ThemeContract $theme         the theme this layout belongs to
-     * @param string $layoutSlug
+     * ThemeLayout constructor.
      */
-    public function __construct(ThemeContract $theme, string $layoutSlug, bool $isExtension = false, string $extensionSlug = null)
-    {
+    public function __construct(
+        ThemeContract $theme,
+        string $layoutSlug,
+        bool $isExtension = false,
+        ?string $extensionSlug = null
+    ) {
         $this->theme = $theme;
         $this->layoutSlug = $layoutSlug;
         $this->isExtension = $isExtension;
         $this->extensionSlug = $extensionSlug;
-        if (file_exists($this->getFolder() . '/config.php')) {
-            $this->config = include $this->getFolder() . '/config.php';
+
+        $this->loadConfig();
+    }
+
+    /**
+     * Load layout configuration if available.
+     */
+    protected function loadConfig(): void
+    {
+        $configFile = $this->getFolder() . '/config.php';
+
+        if (is_file($configFile)) {
+            $this->config = include $configFile;
         }
     }
 
     /**
      * Return the absolute folder path of this theme layout.
-     *
-     * @return string
      */
-    public function getFolder()
+    public function getFolder(): string
     {
-        return ($this->isExtension) ? ($this->layoutSlug) : $this->theme->getFolder() . '/layouts/' . $this->layoutSlug;
+        if ($this->isExtension) {
+            return rtrim((string) $this->extensionSlug, '/');
+        }
+
+        return $this->theme->getFolder() . '/layouts/' . $this->layoutSlug;
     }
 
     /**
      * Return the view file of this theme layout.
-     *
-     * @return string
      */
-    public function getViewFile()
+    public function getViewFile(): string
     {
         return $this->getFolder() . '/view.php';
     }
 
     /**
-     * Return the slug identifying this type of layout.
-     *
-     * @return string
+     * Check if the layout view exists.
      */
-    public function getSlug()
+    public function viewExists(): bool
     {
-        return $this->isExtension ? $this->extensionSlug : $this->layoutSlug;
+        return is_file($this->getViewFile());
+    }
+
+    /**
+     * Return the slug identifying this layout.
+     */
+    public function getSlug(): string
+    {
+        return $this->isExtension && $this->extensionSlug
+            ? $this->extensionSlug
+            : $this->layoutSlug;
     }
 
     /**
      * Return the title of this theme layout.
-     *
-     * @return string
      */
-    public function getTitle()
+    public function getTitle(): string
     {
-        return $this->get('title') ?? ucfirst($this->getSlug());
+        return (string) ($this->get('title') ?? ucfirst($this->getSlug()));
     }
 
     /**
-     * Return configuration with the given key (as dot-separated multidimensional array selector).
+     * Get a configuration value using dot notation.
      *
-     * @param $key
-     * @return mixed|string
+     * @example get('meta.author.name')
      */
-    public function get($key)
+    public function get(string $key, mixed $default = null): mixed
     {
-        // if no dot notation is used, return first dimension value or empty string
-        if (strpos($key, '.') === false) {
-            return $this->config[$key] ?? null;
+        if (!str_contains($key, '.')) {
+            return $this->config[$key] ?? $default;
         }
 
-        // if dot notation is used, traverse config string
         $segments = explode('.', $key);
-        $subArray = $this->config;
+        $value = $this->config;
+
         foreach ($segments as $segment) {
-            if (isset($subArray[$segment])) {
-                $subArray = &$subArray[$segment];
-            } else {
-                return null;
+            if (!is_array($value) || !array_key_exists($segment, $value)) {
+                return $default;
             }
+            $value = $value[$segment];
         }
 
-        return $subArray;
+        return $value;
+    }
+
+    /**
+     * Determine if a config key exists.
+     */
+    public function has(string $key): bool
+    {
+        return $this->get($key, '__missing__') !== '__missing__';
+    }
+
+    /**
+     * Return full configuration array.
+     */
+    public function getAll(): array
+    {
+        return $this->config;
     }
 }
