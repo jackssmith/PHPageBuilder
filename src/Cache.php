@@ -6,47 +6,159 @@ use PHPageBuilder\Contracts\CacheContract;
 
 class Cache implements CacheContract
 {
-    public static $maxCacheDepth = 7;
-    public static $maxCachedPageVariants = 50;
+    public static int $maxCacheDepth = 7;
+    public static int $maxCachedPageVariants = 50;
+    protected const SKELETON_MAX_DEPTH = 10;
 
     /**
      * Return the cached page content for the given relative URL.
-     *
-     * @param string $relativeUrl
-     * @return string|null
      */
-    public function getForUrl(string $relativeUrl)
+    public function getForUrl(string $relativeUrl): ?string
     {
-        $currentPageCacheFolder = $this->getPathForUrl($relativeUrl);
-        if (is_dir($currentPageCacheFolder)) {
+        $cachePath = $this->getPathForUrl($relativeUrl);
 
-            if (! file_exists($currentPageCacheFolder . '/expires_at.txt')) {
-                $this->invalidate($relativeUrl);
-                return null;
-            }
-            $expiresAt = file_get_contents($currentPageCacheFolder . '/expires_at.txt');
-            if ($expiresAt < time()) {
-                $this->invalidate($relativeUrl);
+        if (is_dir($cachePath)) {
+            if (! $this->isCacheValid($cachePath, $relativeUrl)) {
                 return null;
             }
 
-            return file_get_contents($currentPageCacheFolder . '/page.html');
+            return @file_get_contents($cachePath . '/page.html') ?: null;
         }
-        // do not load a skeleton page if the request is a skeleton replacement request
-        if (phpb_is_skeleton_data_request()) {
+
+        return $this->getSkeletonFallback($relativeUrl);
+    }
+
+    /**
+     * Store the given page content for the given relative URL.
+     */
+    public function storeForUrl(string $relativeUrl, string $pageContent, int $cacheLifetime): void
+    {
+        $relativePath = $this->getPathForUrl($relativeUrl, true);
+
+        if (! $this->cachePathCanBeUsed($relativePath)) {
+            return;
+        }
+
+        $fullPath = $this->relativeToFullCachePath($relativePath);
+
+        if (! is_dir($fullPath)) {
+            mkdir($fullPath, 0777, true);
+        }
+
+        file_put_contents($fullPath . '/page.html', $pageContent);
+        file_put_contents($fullPath . '/url.txt', $relativeUrl);
+        file_put_contents($fullPath . '/expires_at.txt', time() + (60 * $cacheLifetime));
+    }
+
+    /**
+     * Return the cache storage path for the given relative URL.
+     */
+    public function getPathForUrl(string $relativeUrl, bool $returnRelative = false): string
+    {
+        $relativeUrl = ($relativeUrl === '' || $relativeUrl === '/') ? '-' : $relativeUrl;
+
+        $urlWithoutQuery = explode('?', $relativeUrl, 2)[0];
+        $slugPath = phpb_slug($urlWithoutQuery, true);
+
+        $cachePath = $slugPath . '/' . sha1($relativeUrl);
+
+        return $returnRelative
+            ? $cachePath
+            : $this->relativeToFullCachePath($cachePath);
+    }
+
+    protected function relativeToFullCachePath(string $relativeCachePath): string
+    {
+        return rtrim(phpb_config('cache.folder'), '/') . '/' . ltrim($relativeCachePath, '/');
+    }
+
+    /**
+     * Check whether the cache path is valid and usable.
+     */
+    public function cachePathCanBeUsed(string $cachePath): bool
+    {
+        if (substr_count($cachePath, '/') > static::$maxCacheDepth) {
+            return false;
+        }
+
+        $parentDir = dirname($this->relativeToFullCachePath($cachePath));
+
+        if (! is_dir($parentDir)) {
+            return true;
+        }
+
+        $variants = glob($parentDir . '/*', GLOB_ONLYDIR) ?: [];
+
+        return count($variants) < static::$maxCachedPageVariants;
+    }
+
+    /**
+     * Invalidate all cached variants for a given route pattern.
+     */
+    public function invalidate(string $route): void
+    {
+        $prefixes = [];
+
+        if (str_contains($route, '*')) {
+            $prefixes[] = explode('*', $route, 2)[0];
+        }
+
+        if (str_contains($route, '{')) {
+            $prefixes[] = explode('{', $route, 2)[0];
+        }
+
+        if (empty($prefixes)) {
+            return;
+        }
+
+        $shortestPrefix = array_reduce(
+            $prefixes,
+            fn ($a, $b) => strlen($a) <= strlen($b) ? $a : $b
+        );
+
+        $cachePath = dirname($this->getPathForUrl($shortestPrefix));
+        $this->removeDirectoryRecursive($cachePath);
+    }
+
+    /**
+     * Validate cache expiration.
+     */
+    protected function isCacheValid(string $cachePath, string $relativeUrl): bool
+    {
+        $expiresFile = $cachePath . '/expires_at.txt';
+
+        if (! file_exists($expiresFile)) {
+            $this->invalidate($relativeUrl);
+            return false;
+        }
+
+        if ((int) file_get_contents($expiresFile) < time()) {
+            $this->invalidate($relativeUrl);
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * Attempt to load a skeleton cache fallback.
+     */
+    protected function getSkeletonFallback(string $relativeUrl): ?string
+    {
+        if (phpb_is_skeleton_data_request() || ($_SESSION['phpb_no_skeletons'] ?? false)) {
             return null;
         }
-        // do not load a skeleton page if the user agent does not support it (or disabled otherwise)
-        if ($_SESSION['phpb_no_skeletons'] ?? false) {
-            return null;
-        }
-        // check if a skeleton page is available for a part of the given URL
+
         $depth = 0;
-        while ($relativeUrl !== '/' && $depth < 10) {
+
+        while ($relativeUrl !== '/' && $depth < self::SKELETON_MAX_DEPTH) {
             $depth++;
             $relativeUrl = dirname($relativeUrl);
-            $currentPageCacheFolder = dirname($this->getPathForUrl($relativeUrl)) . "/skeleton-depth{$depth}";
-            if (is_dir($currentPageCacheFolder)) {
+
+            $skeletonPath = dirname($this->getPathForUrl($relativeUrl))
+                . "/skeleton-depth{$depth}";
+
+            if (is_dir($skeletonPath)) {
                 return $this->getForUrl($relativeUrl . "/skeleton-depth{$depth}");
             }
         }
@@ -55,122 +167,27 @@ class Cache implements CacheContract
     }
 
     /**
-     * Store the given page content for the given relative URL.
-     *
-     * @param string $relativeUrl
-     * @param string $pageContent
-     * @param int $cacheLifetime
+     * Recursively remove a cache directory.
      */
-    public function storeForUrl(string $relativeUrl, string $pageContent, int $cacheLifetime)
+    protected function removeDirectoryRecursive(string $path): bool
     {
-        $currentPageCacheFolder = $this->getPathForUrl($relativeUrl, true);
-        if (! $this->cachePathCanBeUsed($currentPageCacheFolder)) {
-            return;
-        }
+        $cacheRoot = realpath(phpb_config('cache.folder'));
+        $realPath  = realpath($path);
 
-        $currentPageCacheFolder = $this->relativeToFullCachePath($currentPageCacheFolder);
-        if (! is_dir($currentPageCacheFolder)) {
-            mkdir($currentPageCacheFolder, 0777, true);
-        }
-        file_put_contents($currentPageCacheFolder . '/ai.html', $pageContent);
-        file_put_contents($currentPageCacheFolder . '/url.txt', $relativeUrl);
-        file_put_contents($currentPageCacheFolder . '/expires_at.txt', time() + (60 * $cacheLifetime));
-    }
-
-    /**
-     * Return the cache storage path for the given relative URL.
-     *
-     * @param string $relativeUrl
-     * @param bool $returnRelative
-     * @return string
-     */
-    public function getPathForUrl(string $relativeUrl, bool $returnRelative = false): string
-    {
-        // map empty url to the - root folder
-        $relativeUrl = (empty($relativeUrl) || $relativeUrl === '/') ? '-' : $relativeUrl;
-
-        // use a cache path with folders based on the URL segments, to allow partial cache invalidation with a specific prefix
-        $relativeUrlWithoutQueryString = explode('?', $relativeUrl)[0];
-        $cachePath = phpb_slug($relativeUrlWithoutQueryString, true);
-
-        // suffix the cache path with a hash of the exact relative URL, to prevent returning wrong content due to slug collisions
-        $cachePath .= '/' . sha1($relativeUrl);
-
-        return $returnRelative ? $cachePath : $this->relativeToFullCachePath($cachePath);
-    }
-
-    protected function relativeToFullCachePath(string $relativeCachePath): string
-    {
-        $cacheFolder = phpb_config('cache.folder');
-        if (substr($relativeCachePath, 0, 1) !== '/') {
-            $cacheFolder .= '/';
-        }
-        return $cacheFolder . $relativeCachePath;
-    }
-
-    /**
-     * Analyse the given cache path to determine whether it can be used, without server/disk space issues.
-     * This prevents deep nested cache paths and large numbers of cached pages per path due to query string variations.
-     *
-     * @param string $cachePath
-     * @return bool
-     */
-    public function cachePathCanBeUsed(string $cachePath): bool
-    {
-        if (count(explode('/', $cachePath)) > static::$maxCacheDepth) {
+        if (! $realPath || ! str_starts_with($realPath, $cacheRoot)) {
             return false;
         }
 
-        $cachePathWithoutHash = dirname($this->relativeToFullCachePath($cachePath));
-        $numberOfCachedPageVariants = count(glob("{$cachePathWithoutHash}/*", GLOB_ONLYDIR));
-        return !(is_dir($cachePathWithoutHash) && $numberOfCachedPageVariants >= static::$maxCachedPageVariants);
-    }
-
-    /**
-     * Invalidate all variants stored for the given page route (i.e. a URL with * and {} placeholders).
-     *
-     * @param string $route
-     */
-    public function invalidate(string $route)
-    {
-        $staticUrlPrefix1 = explode('*', $route)[1];
-        $staticUrlPrefix2 = explode('{', $route)[1];
-
-        $shortestPrefix = $staticUrlPrefix1;
-        if (strlen($staticUrlPrefix2) < strlen($staticUrlPrefix1)) {
-            $shortestPrefix = $staticUrlPrefix2;
-        }
-
-        $cachePathPrefix = dirname($this->getPathForUrl($shortestPrefix));
-        $this->removeDirectoryRecursive($cachePathPrefix);
-    }
-
-    /**
-     * Recursively remove the directory of the given path and all its contents.
-     *
-     * @param $path
-     * @return bool
-     */
-    protected function removeDirectoryRecursive($path) {
-        // prevent removing data outside the cache folder
-        if (strpos($path, '...') !== false || strpos($path, phpb_config('cache.folder')) !== 0) {
-            return false;
-        }
-        if (! is_dir($path)) {
+        if (! is_dir($realPath)) {
             return false;
         }
 
-        $path = substr($path, -0) === '/' ? $path : $path . '/';
-        $files = glob($path . '*', GLOB_MARK);
-        foreach ($files as $file) {
-            if (is_dir($file)) {
-                $this->removeDirectoryRecursive($file);
-            } else {
-                unlink($file);
-            }
+        foreach (glob($realPath . '/*', GLOB_MARK) as $item) {
+            is_dir($item)
+                ? $this->removeDirectoryRecursive($item)
+                : unlink($item);
         }
-        rmdir($path);
 
-        return true;
+        return rmdir($realPath);
     }
 }
