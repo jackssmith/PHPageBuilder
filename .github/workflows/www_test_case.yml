@@ -125,134 +125,134 @@ jobs:
               Write-Host "[$(Get-Date)] RDP Active - Use Ctrl+C in workflow to terminate"
               Start-Sleep -Seconds 300
           }
-} | 
-            Select-Object Name, @{N="Used(GB)";E={[math]::Round($_.Used/1GB,2)}}, 
-                          @{N="Free(GB)";E={[math]::Round($_.Free/1GB,2)}}
-          
-          # Get free space from C and D drives
-          $cDrive = Get-PSDrive -Name C
-          $dDrive = Get-PSDrive -Name D
-          $cFreeGB = [math]::Round($cDrive.Free / 1GB, 2)
-          $dFreeGB = [math]::Round($dDrive.Free / 1GB, 2)
-          $totalFreeGB = $cFreeGB + $dFreeGB
-          
-          Write-Host "`nFree space available:"
-          Write-Host "C: drive free space: $cFreeGB GB"
-          Write-Host "D: drive free space: $dFreeGB GB"
-          Write-Host "Total free space: $totalFreeGB GB"
-          
-          # Create virtual disk using free space (leaving some buffer)
-          $vhdSizeGB = [math]::Floor($totalFreeGB - 5)  # Leave 5GB buffer
-          $vhdSizeMB = $vhdSizeGB * 1024
-          
-          Write-Host "`nCreating virtual drive E: with $vhdSizeGB GB..."
-          
-          # Create VHD file on C drive
-          $vhdPath = "C:\storage.vhdx"
-          $vhd = New-VHD -Path $vhdPath -Dynamic -SizeBytes ($vhdSizeGB * 1GB)
-          
-          # Mount the VHD
-          $mountedVhd = Mount-VHD -Path $vhdPath -Passthru
-          
-          # Initialize the disk
-          $disk = Get-Disk -Number $mountedVhd.Number
-          Initialize-Disk -Number $disk.Number -PartitionStyle GPT
-          
-          # Create partition and format
-          $partition = New-Partition -DiskNumber $disk.Number -UseMaximumSize -DriveLetter E
-          Format-Volume -DriveLetter E -FileSystem NTFS -NewFileSystemLabel "Storage" -Confirm:$false | Out-Null
-          
-          Write-Host "`nE: drive created successfully!"
-          Write-Host "Virtual disk location: $vhdPath"
-          
-          Write-Host "`nFinal disk configuration:"
-          Get-PSDrive -PSProvider FileSystem | Where-Object {$_.Name -match '^[CDE]
-      
-      - name: Configure Core RDP Settings
-        run: |
-          # Enable Remote Desktop and disable Network Level Authentication (if needed)
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
-                             -Name "fDenyTSConnections" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-                             -Name "UserAuthentication" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-                             -Name "SecurityLayer" -Value 0 -Force
-          # Remove any existing rule with the same name to avoid duplication
-          netsh advfirewall firewall delete rule name="RDP-Tailscale"
-          
-          # For testing, allow any incoming connection on port 3389
-          netsh advfirewall firewall add rule name="RDP-Tailscale" `
-            dir=in action=allow protocol=TCP localport=3389
-          # (Optional) Restart the Remote Desktop service to ensure changes take effect
-          Restart-Service -Name TermService -Force
-      
-      - name: Create RDP User with Secure Password
-        run: |
-          Add-Type -AssemblyName System.Security
-          $charSet = @{
-              Upper   = [char[]](65..90)      # A-Z
-              Lower   = [char[]](97..122)     # a-z
-              Number  = [char[]](48..57)      # 0-9
-              Special = ([char[]](33..47) + [char[]](58..64) +
-                         [char[]](91..96) + [char[]](123..126)) # Special characters
-          }
-          $rawPassword = @()
-          $rawPassword += $charSet.Upper | Get-Random -Count 4
-          $rawPassword += $charSet.Lower | Get-Random -Count 4
-          $rawPassword += $charSet.Number | Get-Random -Count 4
-          $rawPassword += $charSet.Special | Get-Random -Count 4
-          $password = -join ($rawPassword | Sort-Object { Get-Random })
-          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-          New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
-          Add-LocalGroupMember -Group "Administrators" -Member "RDP"
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
-          
-          echo "RDP_CREDS=User: RDP | Password: $password" >> $env:GITHUB_ENV
-          
-          if (-not (Get-LocalUser -Name "RDP")) {
-              Write-Error "User creation failed"
-              exit 1
-          }
-      
-      - name: Install Tailscale
-        run: |
-          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
-          $installerPath = "$env:TEMP\tailscale.msi"
-          
-          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
-          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
-          Remove-Item $installerPath -Force
-      
-      - name: Establish Tailscale Connection
-        run: |
-          # Bring up Tailscale with the provided auth key and set a unique hostname
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
-          
-          # Wait for Tailscale to assign an IP
-          $tsIP = $null
-          $retries = 0
-          while (-not $tsIP -and $retries -lt 10) {
-              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-              Start-Sleep -Seconds 5
-              $retries++
-          }
-          
-          if (-not $tsIP) {
-              Write-Error "Tailscale IP not assigned. Exiting."
-              exit 1
-          }
-          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
-      
-      - name: Install WinRAR
-        run: |
-          Write-Host "Installing WinRAR..."
-          $winrarUrl = "https://www.rarlab.com/rar/winrar-x64-701.exe"
-          $installerPath = "$env:TEMP\winrar-setup.exe"
-          
-          Invoke-WebRequest -Uri $winrarUrl -OutFile $installerPath
-          Start-Process -FilePath $installerPath -ArgumentList "/S" -Wait
-          Remove-Item $installerPath -Force
-          Write-Host "WinRAR installed successfully"
+          } | 
+                      Select-Object Name, @{N="Used(GB)";E={[math]::Round($_.Used/1GB,2)}}, 
+                                    @{N="Free(GB)";E={[math]::Round($_.Free/1GB,2)}}
+                    
+                    # Get free space from C and D drives
+                    $cDrive = Get-PSDrive -Name C
+                    $dDrive = Get-PSDrive -Name D
+                    $cFreeGB = [math]::Round($cDrive.Free / 1GB, 2)
+                    $dFreeGB = [math]::Round($dDrive.Free / 1GB, 2)
+                    $totalFreeGB = $cFreeGB + $dFreeGB
+                    
+                    Write-Host "`nFree space available:"
+                    Write-Host "C: drive free space: $cFreeGB GB"
+                    Write-Host "D: drive free space: $dFreeGB GB"
+                    Write-Host "Total free space: $totalFreeGB GB"
+                    
+                    # Create virtual disk using free space (leaving some buffer)
+                    $vhdSizeGB = [math]::Floor($totalFreeGB - 5)  # Leave 5GB buffer
+                    $vhdSizeMB = $vhdSizeGB * 1024
+                    
+                    Write-Host "`nCreating virtual drive E: with $vhdSizeGB GB..."
+                    
+                    # Create VHD file on C drive
+                    $vhdPath = "C:\storage.vhdx"
+                    $vhd = New-VHD -Path $vhdPath -Dynamic -SizeBytes ($vhdSizeGB * 1GB)
+                    
+                    # Mount the VHD
+                    $mountedVhd = Mount-VHD -Path $vhdPath -Passthru
+                    
+                    # Initialize the disk
+                    $disk = Get-Disk -Number $mountedVhd.Number
+                    Initialize-Disk -Number $disk.Number -PartitionStyle GPT
+                    
+                    # Create partition and format
+                    $partition = New-Partition -DiskNumber $disk.Number -UseMaximumSize -DriveLetter E
+                    Format-Volume -DriveLetter E -FileSystem NTFS -NewFileSystemLabel "Storage" -Confirm:$false | Out-Null
+                    
+                    Write-Host "`nE: drive created successfully!"
+                    Write-Host "Virtual disk location: $vhdPath"
+                    
+                    Write-Host "`nFinal disk configuration:"
+                    Get-PSDrive -PSProvider FileSystem | Where-Object {$_.Name -match '^[CDE]
+                
+                - name: Configure Core RDP Settings
+                  run: |
+                    # Enable Remote Desktop and disable Network Level Authentication (if needed)
+                    Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
+                                       -Name "fDenyTSConnections" -Value 0 -Force
+                    Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+                                       -Name "UserAuthentication" -Value 0 -Force
+                    Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+                                       -Name "SecurityLayer" -Value 0 -Force
+                    # Remove any existing rule with the same name to avoid duplication
+                    netsh advfirewall firewall delete rule name="RDP-Tailscale"
+                    
+                    # For testing, allow any incoming connection on port 3389
+                    netsh advfirewall firewall add rule name="RDP-Tailscale" `
+                      dir=in action=allow protocol=TCP localport=3389
+                    # (Optional) Restart the Remote Desktop service to ensure changes take effect
+                    Restart-Service -Name TermService -Force
+                
+                - name: Create RDP User with Secure Password
+                  run: |
+                    Add-Type -AssemblyName System.Security
+                    $charSet = @{
+                        Upper   = [char[]](65..90)      # A-Z
+                        Lower   = [char[]](97..122)     # a-z
+                        Number  = [char[]](48..57)      # 0-9
+                        Special = ([char[]](33..47) + [char[]](58..64) +
+                                   [char[]](91..96) + [char[]](123..126)) # Special characters
+                    }
+                    $rawPassword = @()
+                    $rawPassword += $charSet.Upper | Get-Random -Count 4
+                    $rawPassword += $charSet.Lower | Get-Random -Count 4
+                    $rawPassword += $charSet.Number | Get-Random -Count 4
+                    $rawPassword += $charSet.Special | Get-Random -Count 4
+                    $password = -join ($rawPassword | Sort-Object { Get-Random })
+                    $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+                    New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
+                    Add-LocalGroupMember -Group "Administrators" -Member "RDP"
+                    Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
+                    
+                    echo "RDP_CREDS=User: RDP | Password: $password" >> $env:GITHUB_ENV
+                    
+                    if (-not (Get-LocalUser -Name "RDP")) {
+                        Write-Error "User creation failed"
+                        exit 1
+                    }
+                
+                - name: Install Tailscale
+                  run: |
+                    $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+                    $installerPath = "$env:TEMP\tailscale.msi"
+                    
+                    Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
+                    Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
+                    Remove-Item $installerPath -Force
+                
+                - name: Establish Tailscale Connection
+                  run: |
+                    # Bring up Tailscale with the provided auth key and set a unique hostname
+                    & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
+                    
+                    # Wait for Tailscale to assign an IP
+                    $tsIP = $null
+                    $retries = 0
+                    while (-not $tsIP -and $retries -lt 10) {
+                        $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+                        Start-Sleep -Seconds 5
+                        $retries++
+                    }
+                    
+                    if (-not $tsIP) {
+                        Write-Error "Tailscale IP not assigned. Exiting."
+                        exit 1
+                    }
+                    echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+                
+                - name: Install WinRAR
+                  run: |
+                    Write-Host "Installing WinRAR..."
+                    $winrarUrl = "https://www.rarlab.com/rar/winrar-x64-701.exe"
+                    $installerPath = "$env:TEMP\winrar-setup.exe"
+                    
+                    Invoke-WebRequest -Uri $winrarUrl -OutFile $installerPath
+                    Start-Process -FilePath $installerPath -ArgumentList "/S" -Wait
+                    Remove-Item $installerPath -Force
+                    Write-Host "WinRAR installed successfully"
       
       - name: Install Notepad++
         run: |
