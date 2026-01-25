@@ -20,15 +20,19 @@ jobs:
           
           # Disable paging file on D: drive
           Write-Host "Disabling paging file on D: drive..."
-          $pagefile = Get-WmiObject -Class Win32_PageFileSetting | Where-Object {$_.Name -like "D:*"}
-          if ($pagefile) {
-              $pagefile.Delete()
+          $pagefiles = Get-CimInstance -ClassName Win32_PageFileSetting
+          foreach ($pagefile in $pagefiles) {
+              if ($pagefile.Name -like "D:*") {
+                  Write-Host "Removing pagefile: $($pagefile.Name)"
+                  Remove-CimInstance -InputObject $pagefile
+              }
           }
           
-          # Set paging file to system managed on C: drive only
-          $cs = Get-WmiObject -Class Win32_ComputerSystem
-          $cs.AutomaticManagedPagefile = $true
-          $cs.Put() | Out-Null
+          # Disable automatic managed pagefile temporarily
+          $cs = Get-CimInstance -ClassName Win32_ComputerSystem
+          if ($cs.AutomaticManagedPagefile) {
+              Invoke-CimMethod -InputObject $cs -MethodName SetAutomaticManagedPagefile -Arguments @{AutomaticManagedPagefile=$false} | Out-Null
+          }
           
           # Get disk and partition info
           $dPartition = Get-Partition -DriveLetter D
