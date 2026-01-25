@@ -1,4 +1,4 @@
-name: Testing WWwwwww
+name: Testing WW case
 
 on:
   workflow_dispatch:
@@ -12,31 +12,291 @@ jobs:
       - name: Consolidate Storage to C Drive
         run: |
           Write-Host "Initial disk space:"
-          Get-PSDrive -PSProvider FileSystem | Where-Object {$_.Name -match '^[CD]$'} | 
+          Get-PSDrive -PSProvider FileSystem | Where-Object {$_.Name -match '^[CD]
+      
+      - name: Configure Core RDP Settings
+        run: |
+          # Enable Remote Desktop and disable Network Level Authentication (if needed)
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
+                             -Name "fDenyTSConnections" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+                             -Name "UserAuthentication" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+                             -Name "SecurityLayer" -Value 0 -Force
+          # Remove any existing rule with the same name to avoid duplication
+          netsh advfirewall firewall delete rule name="RDP-Tailscale"
+          
+          # For testing, allow any incoming connection on port 3389
+          netsh advfirewall firewall add rule name="RDP-Tailscale" `
+            dir=in action=allow protocol=TCP localport=3389
+          # (Optional) Restart the Remote Desktop service to ensure changes take effect
+          Restart-Service -Name TermService -Force
+      
+      - name: Create RDP User with Secure Password
+        run: |
+          Add-Type -AssemblyName System.Security
+          $charSet = @{
+              Upper   = [char[]](65..90)      # A-Z
+              Lower   = [char[]](97..122)     # a-z
+              Number  = [char[]](48..57)      # 0-9
+              Special = ([char[]](33..47) + [char[]](58..64) +
+                         [char[]](91..96) + [char[]](123..126)) # Special characters
+          }
+          $rawPassword = @()
+          $rawPassword += $charSet.Upper | Get-Random -Count 4
+          $rawPassword += $charSet.Lower | Get-Random -Count 4
+          $rawPassword += $charSet.Number | Get-Random -Count 4
+          $rawPassword += $charSet.Special | Get-Random -Count 4
+          $password = -join ($rawPassword | Sort-Object { Get-Random })
+          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+          New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
+          Add-LocalGroupMember -Group "Administrators" -Member "RDP"
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
+          
+          echo "RDP_CREDS=User: RDP | Password: $password" >> $env:GITHUB_ENV
+          
+          if (-not (Get-LocalUser -Name "RDP")) {
+              Write-Error "User creation failed"
+              exit 1
+          }
+      
+      - name: Install Tailscale
+        run: |
+          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+          $installerPath = "$env:TEMP\tailscale.msi"
+          
+          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
+          Remove-Item $installerPath -Force
+      
+      - name: Establish Tailscale Connection
+        run: |
+          # Bring up Tailscale with the provided auth key and set a unique hostname
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
+          
+          # Wait for Tailscale to assign an IP
+          $tsIP = $null
+          $retries = 0
+          while (-not $tsIP -and $retries -lt 10) {
+              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+              Start-Sleep -Seconds 5
+              $retries++
+          }
+          
+          if (-not $tsIP) {
+              Write-Error "Tailscale IP not assigned. Exiting."
+              exit 1
+          }
+          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+      
+      - name: Install WinRAR
+        run: |
+          Write-Host "Installing WinRAR..."
+          $winrarUrl = "https://www.rarlab.com/rar/winrar-x64-701.exe"
+          $installerPath = "$env:TEMP\winrar-setup.exe"
+          
+          Invoke-WebRequest -Uri $winrarUrl -OutFile $installerPath
+          Start-Process -FilePath $installerPath -ArgumentList "/S" -Wait
+          Remove-Item $installerPath -Force
+          Write-Host "WinRAR installed successfully"
+      
+      - name: Install Notepad++
+        run: |
+          Write-Host "Installing Notepad++..."
+          $nppUrl = "https://github.com/notepad-plus-plus/notepad-plus-plus/releases/download/v8.6.9/npp.8.6.9.Installer.x64.exe"
+          $installerPath = "$env:TEMP\npp-setup.exe"
+          
+          Invoke-WebRequest -Uri $nppUrl -OutFile $installerPath
+          Start-Process -FilePath $installerPath -ArgumentList "/S" -Wait
+          Remove-Item $installerPath -Force
+          Write-Host "Notepad++ installed successfully"
+      
+      - name: Maintain Connection
+        run: |
+          Write-Host "`n=== RDP ACCESS ==="
+          Write-Host "Address: $env:TAILSCALE_IP"
+          Write-Host "Username: RDP"
+          Write-Host "Password: $(echo $env:RDP_CREDS)"
+          Write-Host "xfreerdp /v:$env:TAILSCALE_IP /u:RDP /p:'$env:RDP_CREDS' /dynamic-resolution"
+          Write-Host "==================`n"
+          
+          # Keep runner active indefinitely (or until manually cancelled)
+          while ($true) {
+              Write-Host "[$(Get-Date)] RDP Active - Use Ctrl+C in workflow to terminate"
+              Start-Sleep -Seconds 300
+          }
+} | 
             Select-Object Name, @{N="Used(GB)";E={[math]::Round($_.Used/1GB,2)}}, 
                           @{N="Free(GB)";E={[math]::Round($_.Free/1GB,2)}}
           
-          # Extend C: drive with D: drive space
-          Write-Host "`nExtending C: drive with D: drive space..."
+          Write-Host "`nConsolidating storage to C: drive..."
           
-          # Remove D: drive letter assignment
-          $driveLetter = Get-Partition -DriveLetter D
-          Remove-PartitionAccessPath -DiskNumber $driveLetter.DiskNumber -PartitionNumber $driveLetter.PartitionNumber -AccessPath "D:\"
+          # Disable paging file on D: drive
+          Write-Host "Disabling paging file on D: drive..."
+          $pagefile = Get-WmiObject -Class Win32_PageFileSetting | Where-Object {$_.Name -like "D:*"}
+          if ($pagefile) {
+              $pagefile.Delete()
+          }
           
-          # Get the C: drive partition
+          # Set paging file to system managed on C: drive only
+          $cs = Get-WmiObject -Class Win32_ComputerSystem
+          $cs.AutomaticManagedPagefile = $true
+          $cs.Put() | Out-Null
+          
+          # Get disk and partition info
+          $dPartition = Get-Partition -DriveLetter D
           $cPartition = Get-Partition -DriveLetter C
           
-          # Get maximum size for C: drive
-          $maxSize = (Get-PartitionSupportedSize -DiskNumber $cPartition.DiskNumber -PartitionNumber $cPartition.PartitionNumber).SizeMax
-          
-          # Resize C: partition to maximum available size
-          Resize-Partition -DiskNumber $cPartition.DiskNumber -PartitionNumber $cPartition.PartitionNumber -Size $maxSize
+          # Check if they're on the same physical disk
+          if ($dPartition.DiskNumber -eq $cPartition.DiskNumber) {
+              Write-Host "C: and D: are on the same disk. Removing D: and extending C:..."
+              
+              # Remove D: drive letter
+              Remove-PartitionAccessPath -DiskNumber $dPartition.DiskNumber -PartitionNumber $dPartition.PartitionNumber -AccessPath "D:\"
+              
+              # Delete D: partition
+              Remove-Partition -DiskNumber $dPartition.DiskNumber -PartitionNumber $dPartition.PartitionNumber -Confirm:$false
+              
+              # Extend C: partition to use freed space
+              $maxSize = (Get-PartitionSupportedSize -DiskNumber $cPartition.DiskNumber -PartitionNumber $cPartition.PartitionNumber).SizeMax
+              Resize-Partition -DiskNumber $cPartition.DiskNumber -PartitionNumber $cPartition.PartitionNumber -Size $maxSize
+              
+              Write-Host "Successfully consolidated storage to C: drive"
+          } else {
+              Write-Host "C: and D: are on different disks. Creating mount point instead..."
+              
+              # Remove D: drive letter
+              Remove-PartitionAccessPath -DiskNumber $dPartition.DiskNumber -PartitionNumber $dPartition.PartitionNumber -AccessPath "D:\"
+              
+              # Create a mount point for D: under C:\Storage
+              New-Item -Path "C:\Storage" -ItemType Directory -Force | Out-Null
+              Add-PartitionAccessPath -DiskNumber $dPartition.DiskNumber -PartitionNumber $dPartition.PartitionNumber -AccessPath "C:\Storage"
+              
+              Write-Host "D: drive mounted at C:\Storage"
+          }
           
           Write-Host "`nFinal disk space:"
-          Get-PSDrive -PSProvider FileSystem | Where-Object {$_.Name -match '^[C]$'} | 
+          Get-PSDrive -PSProvider FileSystem | Where-Object {$_.Name -match '^[C]
+      
+      - name: Configure Core RDP Settings
+        run: |
+          # Enable Remote Desktop and disable Network Level Authentication (if needed)
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
+                             -Name "fDenyTSConnections" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+                             -Name "UserAuthentication" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+                             -Name "SecurityLayer" -Value 0 -Force
+          # Remove any existing rule with the same name to avoid duplication
+          netsh advfirewall firewall delete rule name="RDP-Tailscale"
+          
+          # For testing, allow any incoming connection on port 3389
+          netsh advfirewall firewall add rule name="RDP-Tailscale" `
+            dir=in action=allow protocol=TCP localport=3389
+          # (Optional) Restart the Remote Desktop service to ensure changes take effect
+          Restart-Service -Name TermService -Force
+      
+      - name: Create RDP User with Secure Password
+        run: |
+          Add-Type -AssemblyName System.Security
+          $charSet = @{
+              Upper   = [char[]](65..90)      # A-Z
+              Lower   = [char[]](97..122)     # a-z
+              Number  = [char[]](48..57)      # 0-9
+              Special = ([char[]](33..47) + [char[]](58..64) +
+                         [char[]](91..96) + [char[]](123..126)) # Special characters
+          }
+          $rawPassword = @()
+          $rawPassword += $charSet.Upper | Get-Random -Count 4
+          $rawPassword += $charSet.Lower | Get-Random -Count 4
+          $rawPassword += $charSet.Number | Get-Random -Count 4
+          $rawPassword += $charSet.Special | Get-Random -Count 4
+          $password = -join ($rawPassword | Sort-Object { Get-Random })
+          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+          New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
+          Add-LocalGroupMember -Group "Administrators" -Member "RDP"
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
+          
+          echo "RDP_CREDS=User: RDP | Password: $password" >> $env:GITHUB_ENV
+          
+          if (-not (Get-LocalUser -Name "RDP")) {
+              Write-Error "User creation failed"
+              exit 1
+          }
+      
+      - name: Install Tailscale
+        run: |
+          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+          $installerPath = "$env:TEMP\tailscale.msi"
+          
+          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
+          Remove-Item $installerPath -Force
+      
+      - name: Establish Tailscale Connection
+        run: |
+          # Bring up Tailscale with the provided auth key and set a unique hostname
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
+          
+          # Wait for Tailscale to assign an IP
+          $tsIP = $null
+          $retries = 0
+          while (-not $tsIP -and $retries -lt 10) {
+              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+              Start-Sleep -Seconds 5
+              $retries++
+          }
+          
+          if (-not $tsIP) {
+              Write-Error "Tailscale IP not assigned. Exiting."
+              exit 1
+          }
+          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+      
+      - name: Install WinRAR
+        run: |
+          Write-Host "Installing WinRAR..."
+          $winrarUrl = "https://www.rarlab.com/rar/winrar-x64-701.exe"
+          $installerPath = "$env:TEMP\winrar-setup.exe"
+          
+          Invoke-WebRequest -Uri $winrarUrl -OutFile $installerPath
+          Start-Process -FilePath $installerPath -ArgumentList "/S" -Wait
+          Remove-Item $installerPath -Force
+          Write-Host "WinRAR installed successfully"
+      
+      - name: Install Notepad++
+        run: |
+          Write-Host "Installing Notepad++..."
+          $nppUrl = "https://github.com/notepad-plus-plus/notepad-plus-plus/releases/download/v8.6.9/npp.8.6.9.Installer.x64.exe"
+          $installerPath = "$env:TEMP\npp-setup.exe"
+          
+          Invoke-WebRequest -Uri $nppUrl -OutFile $installerPath
+          Start-Process -FilePath $installerPath -ArgumentList "/S" -Wait
+          Remove-Item $installerPath -Force
+          Write-Host "Notepad++ installed successfully"
+      
+      - name: Maintain Connection
+        run: |
+          Write-Host "`n=== RDP ACCESS ==="
+          Write-Host "Address: $env:TAILSCALE_IP"
+          Write-Host "Username: RDP"
+          Write-Host "Password: $(echo $env:RDP_CREDS)"
+          Write-Host "xfreerdp /v:$env:TAILSCALE_IP /u:RDP /p:'$env:RDP_CREDS' /dynamic-resolution"
+          Write-Host "==================`n"
+          
+          # Keep runner active indefinitely (or until manually cancelled)
+          while ($true) {
+              Write-Host "[$(Get-Date)] RDP Active - Use Ctrl+C in workflow to terminate"
+              Start-Sleep -Seconds 300
+          }
+} | 
             Select-Object Name, @{N="Used(GB)";E={[math]::Round($_.Used/1GB,2)}}, 
                           @{N="Free(GB)";E={[math]::Round($_.Free/1GB,2)}}, 
                           @{N="Total(GB)";E={[math]::Round(($_.Used+$_.Free)/1GB,2)}}
+          
+          if (Test-Path "C:\Storage") {
+              Write-Host "`nAdditional storage available at C:\Storage"
+          }
       
       - name: Configure Core RDP Settings
         run: |
