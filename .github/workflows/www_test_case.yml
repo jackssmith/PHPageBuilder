@@ -279,30 +279,30 @@ jobs:
               Write-Host "[$(Get-Date)] RDP Active - Use Ctrl+C in workflow to terminate"
               Start-Sleep -Seconds 300
           }
-} | 
-            Select-Object Name, @{N="Used(GB)";E={[math]::Round($_.Used/1GB,2)}}, 
-                          @{N="Free(GB)";E={[math]::Round($_.Free/1GB,2)}}, 
-                          @{N="Total(GB)";E={[math]::Round(($_.Used+$_.Free)/1GB,2)}}
-          
-          Write-Host "`nYou now have a large E: drive with ~$vhdSizeGB GB of usable space!"
-      
-      - name: Configure Core RDP Settings
-        run: |
-          # Enable Remote Desktop and disable Network Level Authentication (if needed)
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
-                             -Name "fDenyTSConnections" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-                             -Name "UserAuthentication" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-                             -Name "SecurityLayer" -Value 0 -Force
-          # Remove any existing rule with the same name to avoid duplication
-          netsh advfirewall firewall delete rule name="RDP-Tailscale"
-          
-          # For testing, allow any incoming connection on port 3389
-          netsh advfirewall firewall add rule name="RDP-Tailscale" `
-            dir=in action=allow protocol=TCP localport=3389
-          # (Optional) Restart the Remote Desktop service to ensure changes take effect
-          Restart-Service -Name TermService -Force
+          } | 
+                      Select-Object Name, @{N="Used(GB)";E={[math]::Round($_.Used/1GB,2)}}, 
+                                    @{N="Free(GB)";E={[math]::Round($_.Free/1GB,2)}}, 
+                                    @{N="Total(GB)";E={[math]::Round(($_.Used+$_.Free)/1GB,2)}}
+                    
+                    Write-Host "`nYou now have a large E: drive with ~$vhdSizeGB GB of usable space!"
+                
+                - name: Configure Core RDP Settings
+                  run: |
+                    # Enable Remote Desktop and disable Network Level Authentication (if needed)
+                    Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
+                                       -Name "fDenyTSConnections" -Value 0 -Force
+                    Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+                                       -Name "UserAuthentication" -Value 0 -Force
+                    Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+                                       -Name "SecurityLayer" -Value 0 -Force
+                    # Remove any existing rule with the same name to avoid duplication
+                    netsh advfirewall firewall delete rule name="RDP-Tailscale"
+                    
+                    # For testing, allow any incoming connection on port 3389
+                    netsh advfirewall firewall add rule name="RDP-Tailscale" `
+                      dir=in action=allow protocol=TCP localport=3389
+                    # (Optional) Restart the Remote Desktop service to ensure changes take effect
+                    Restart-Service -Name TermService -Force
       
       - name: Create RDP User with Secure Password
         run: |
