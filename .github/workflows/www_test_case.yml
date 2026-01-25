@@ -1,4 +1,4 @@
-name: Testing WW
+name: Testing WW show case
 
 on:
   workflow_dispatch:
