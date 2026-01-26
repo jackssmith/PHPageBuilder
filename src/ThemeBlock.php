@@ -27,9 +27,14 @@ class ThemeBlock
     protected ?string $extensionSlug;
 
     /**
-     * Cached resolved folder path (performance improvement)
+     * Cached resolved folder path
      */
     protected ?string $resolvedFolder = null;
+
+    /**
+     * Cached view hash (per instance, not static)
+     */
+    protected ?string $viewHash = null;
 
     public function __construct(
         ThemeContract $theme,
@@ -38,24 +43,44 @@ class ThemeBlock
         ?string $extensionSlug = null
     ) {
         $this->theme = $theme;
-        $this->blockSlug = $blockSlug;
+        $this->blockSlug = trim($blockSlug, '/');
         $this->isExtension = $isExtension;
         $this->extensionSlug = $extensionSlug;
 
+        $this->loadConfig();
+        $this->applyCacheSettings();
+    }
+
+    /* -----------------------------------------------------------------
+     |  Initialization
+     | ----------------------------------------------------------------- */
+
+    protected function loadConfig(): void
+    {
         $configFile = $this->getFolder() . '/config.php';
+
         if (is_file($configFile)) {
-            $this->config = require $configFile;
+            $this->config = (array) require $configFile;
         }
 
+        // Merge runtime dynamic config (if any)
+        if ($dynamic = self::getDynamicConfig($this->blockSlug)) {
+            $this->config = array_replace_recursive($this->config, $dynamic);
+        }
+    }
+
+    protected function applyCacheSettings(): void
+    {
         PageRenderer::setCanBeCached(
             (bool) ($this->config['cache'] ?? true),
             $this->config['cache_lifetime'] ?? null
         );
     }
 
-    /**
-     * Resolve and cache block folder path
-     */
+    /* -----------------------------------------------------------------
+     |  Folder & Namespace Resolution
+     | ----------------------------------------------------------------- */
+
     public function getFolder(): string
     {
         if ($this->resolvedFolder !== null) {
@@ -63,7 +88,7 @@ class ThemeBlock
         }
 
         if ($this->isExtension) {
-            return $this->resolvedFolder = $this->blockSlug;
+            return $this->resolvedFolder = rtrim($this->blockSlug, '/');
         }
 
         $base = rtrim($this->theme->getFolder(), '/');
@@ -82,12 +107,10 @@ class ThemeBlock
             }
         }
 
-        return $this->resolvedFolder = end($candidates);
+        // Fallback (expected path)
+        return $this->resolvedFolder = "$base/blocks/$slug";
     }
 
-    /**
-     * Return PHP namespace for this block
-     */
     protected function getNamespace(): string
     {
         if (!empty($this->config['namespace'])) {
@@ -98,17 +121,22 @@ class ThemeBlock
             return $ns;
         }
 
-        $themesPath = phpb_config('theme.folder');
+        $themesPath = rtrim((string) phpb_config('theme.folder'), '/');
         $themesFolderName = basename($themesPath);
-        $blockFolder = $this->getFolder();
 
-        $namespacePath = $themesFolderName . str_replace($themesPath, '', $blockFolder);
+        $relativePath = str_replace($themesPath, '', $this->getFolder());
+        $namespacePath = $themesFolderName . $relativePath;
+
         $namespacePath = str_replace(['-', '_'], ' ', $namespacePath);
         $namespacePath = ucwords($namespacePath);
         $namespacePath = str_replace(' ', '', $namespacePath);
 
         return str_replace('/', '\\', $namespacePath);
     }
+
+    /* -----------------------------------------------------------------
+     |  MVC Resolution
+     | ----------------------------------------------------------------- */
 
     public function getControllerClass(): string
     {
@@ -119,9 +147,7 @@ class ThemeBlock
 
     public function getControllerFile(): ?string
     {
-        return $this->fileExists('controller.php')
-            ? $this->getFolder() . '/controller.php'
-            : null;
+        return $this->getFileIfExists('controller.php');
     }
 
     public function getModelClass(): string
@@ -133,10 +159,12 @@ class ThemeBlock
 
     public function getModelFile(): ?string
     {
-        return $this->fileExists('model.php')
-            ? $this->getFolder() . '/model.php'
-            : null;
+        return $this->getFileIfExists('model.php');
     }
+
+    /* -----------------------------------------------------------------
+     |  View & Assets
+     | ----------------------------------------------------------------- */
 
     public function getViewFile(): string
     {
@@ -168,11 +196,10 @@ class ThemeBlock
 
     public function getThumbPath(): string
     {
-        $hash = $this->getViewHash();
         return $this->theme->getFolder()
             . '/public/block-thumbs/'
             . md5($this->blockSlug)
-            . "/$hash.jpg";
+            . '/' . $this->getViewHash() . '.jpg';
     }
 
     public function getThumbUrl(): string
@@ -182,9 +209,15 @@ class ThemeBlock
         );
     }
 
+    /* -----------------------------------------------------------------
+     |  Metadata
+     | ----------------------------------------------------------------- */
+
     public function getSlug(): string
     {
-        return $this->isExtension ? (string) $this->extensionSlug : $this->blockSlug;
+        return $this->isExtension
+            ? (string) $this->extensionSlug
+            : $this->blockSlug;
     }
 
     public function isPhpBlock(): bool
@@ -199,12 +232,13 @@ class ThemeBlock
 
     public function getWrapperElement(): string
     {
-        return $this->config['wrapper'] ?? 'div';
+        return (string) ($this->config['wrapper'] ?? 'div');
     }
 
-    /**
-     * Safe config getter with dot-notation support
-     */
+    /* -----------------------------------------------------------------
+     |  Config Helpers
+     | ----------------------------------------------------------------- */
+
     public function get(?string $key = null)
     {
         if ($key === null) {
@@ -244,18 +278,25 @@ class ThemeBlock
         $ref = $value;
     }
 
-    public static function getDynamicConfig(string $slug)
+    public static function getDynamicConfig(string $slug): ?array
     {
         return self::$dynamicConfig[$slug] ?? null;
     }
 
     /* -----------------------------------------------------------------
-     |  Helper methods (NEW)
+     |  Helper Methods
      | ----------------------------------------------------------------- */
 
     protected function fileExists(string $file): bool
     {
         return is_file($this->getFolder() . '/' . $file);
+    }
+
+    protected function getFileIfExists(string $file): ?string
+    {
+        return $this->fileExists($file)
+            ? $this->getFolder() . '/' . $file
+            : null;
     }
 
     protected function getFirstExistingFile(array $files): ?string
@@ -270,12 +311,11 @@ class ThemeBlock
 
     protected function getViewHash(): string
     {
-        static $hash = null;
-
-        if ($hash === null) {
-            $hash = md5((string) @file_get_contents($this->getViewFile()));
+        if ($this->viewHash === null) {
+            $content = @file_get_contents($this->getViewFile());
+            $this->viewHash = md5((string) $content);
         }
 
-        return $hash;
+        return $this->viewHash;
     }
 }
