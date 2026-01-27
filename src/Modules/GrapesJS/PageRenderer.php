@@ -1,107 +1,79 @@
 <?php
 
+declare(strict_types=1);
+
 namespace PHPageBuilder\Modules\GrapesJS;
 
+use Exception;
 use PHPageBuilder\Contracts\PageContract;
 use PHPageBuilder\Contracts\ThemeContract;
+use PHPageBuilder\Extensions;
 use PHPageBuilder\Modules\GrapesJS\Block\BlockRenderer;
 use PHPageBuilder\ThemeBlock;
-use Exception;
-use PHPageBuilder\Extensions;
 
 class PageRenderer
 {
-    /**
-     * @var ThemeContract $theme
-     */
-    protected $theme;
+    protected ThemeContract $theme;
+    protected PageContract $page;
+
+    /** @var array<string,mixed> */
+    protected array $pageData = [];
+
+    /** @var array<string,mixed> */
+    protected array $pageBlocksData = [];
+
+    protected ShortcodeParser $shortcodeParser;
+    protected bool $forPageBuilder = false;
+    protected string $language;
+
+    /** Cache flags */
+    public static ?bool $canBeCached = null;
+    public static ?string $skeletonCacheUrl = null;
 
     /**
-     * @var PageContract $page
+     * Cache lifetime in minutes (default: one week)
      */
-    protected $page;
+    public static int $cacheLifetime = 7 * 24 * 60;
 
-    /**
-     * @var array $pageData
-     */
-    protected $pageData;
-
-    /**
-     * @var array $pageBlocksData
-     */
-    protected $pageBlocksData;
-
-    /**
-     * @var ShortcodeParser $shortcodeParser
-     */
-    protected $shortcodeParser;
-
-    /**
-     * @var bool $forPageBuilder
-     */
-    protected $forPageBuilder;
-
-    /**
-     * @var string $language
-     */
-    protected $language;
-
-    /**
-     * @var bool $canBeCached
-     */
-    public static $canBeCached;
-
-    /**
-     * @var string $skeletonCacheUrl
-     */
-    public static $skeletonCacheUrl;
-
-    /**
-     * The maximum number of minutes this page should be cached, one week by default.
-     *
-     * @var int $cacheLifetime
-     */
-    public static $cacheLifetime = 7*24*60;
-
-    /**
-     * PageRenderer constructor.
-     *
-     * @param ThemeContract $theme
-     * @param PageContract $page
-     * @param bool $forPageBuilder
-     */
-    public function __construct(ThemeContract $theme, PageContract $page, $forPageBuilder = false)
-    {
+    public function __construct(
+        ThemeContract $theme,
+        PageContract $page,
+        bool $forPageBuilder = false
+    ) {
         $this->theme = $theme;
         $this->page = $page;
-        $this->pageData = $page->getBuilderData();
+        $this->pageData = $page->getBuilderData() ?? [];
+        $this->forPageBuilder = $forPageBuilder;
+
         $this->shortcodeParser = phpb_instance(ShortcodeParser::class, [$this]);
         $this->setLanguage(phpb_current_language());
-        $this->forPageBuilder = $forPageBuilder;
     }
 
     /**
      * Set which page language variant to use while rendering.
-     *
-     * @param $language
      */
-    public function setLanguage($language)
+    public function setLanguage(string $language): void
     {
-        // if the given language is unknown, default the set language to the first available language
-        $blockKeysAreLanguages = true;
         $storedBlockLanguages = array_keys($this->pageData['blocks'] ?? []);
-        // check whether keys are valid languages (renderPageBuilderBlock uses pageData without language data)
+        $blockKeysAreLanguages = true;
+
         foreach ($storedBlockLanguages as $supportedLanguage) {
             if (strlen($supportedLanguage) > 5) {
                 $blockKeysAreLanguages = false;
                 break;
             }
         }
-        if ($blockKeysAreLanguages && ! empty($storedBlockLanguages) && ! in_array($language, $storedBlockLanguages)) {
-            if (! isset(phpb_active_languages()[$language])) {
+
+        if (
+            $blockKeysAreLanguages &&
+            !empty($storedBlockLanguages) &&
+            !in_array($language, $storedBlockLanguages, true)
+        ) {
+            if (!isset(phpb_active_languages()[$language])) {
                 $language = $storedBlockLanguages[0];
             } else {
-                $this->pageData['blocks'][$language] = $this->pageData['blocks'][$storedBlockLanguages[0]];
+                $this->pageData['blocks'][$language] =
+                    $this->pageData['blocks'][$storedBlockLanguages[0]] ?? [];
             }
         }
 
@@ -111,129 +83,106 @@ class PageRenderer
     }
 
     /**
-     * Return the absolute path to the layout view of this page.
-     *
-     * @return string|null
+     * Get absolute path to the layout view.
      */
-    public function getPageLayoutPath()
+    public function getPageLayoutPath(): ?string
     {
-        $layout = basename($this->page->getLayout());
-        $layoutPath = $this->theme->getFolder() . '/layouts/' . $layout . '/view.php';
+        $layout = basename((string) $this->page->getLayout());
+        $layoutPath = $this->theme->getFolder() . "/layouts/{$layout}/view.php";
 
         if ($path = Extensions::getLayout($layout)) {
             $layoutPath = $path . '/view.php';
         }
 
-        return file_exists($layoutPath) ? $layoutPath : null;
+        return is_file($layoutPath) ? $layoutPath : null;
     }
 
-    /**
-     * Set whether the currently rendered page can be cached.
-     *
-     * @param bool $canBeCached
-     * @param string|null $cacheLifetime
-     */
-    public static function setCanBeCached(bool $canBeCached, $cacheLifetime = null)
+    public static function setCanBeCached(bool $canBeCached, ?int $cacheLifetime = null): void
     {
-        if (! $canBeCached || ($cacheLifetime && (int) $cacheLifetime <= 0)) {
+        if (!$canBeCached || ($cacheLifetime !== null && $cacheLifetime <= 0)) {
             static::$canBeCached = false;
-        } elseif ($cacheLifetime) {
-            static::$cacheLifetime = min(static::$cacheLifetime, (int) $cacheLifetime);
+            return;
+        }
+
+        static::$canBeCached = true;
+
+        if ($cacheLifetime !== null) {
+            static::$cacheLifetime = min(static::$cacheLifetime, $cacheLifetime);
         }
     }
 
-    /**
-     * Return whether the rendered page can be cached.
-     * I.e. no blocks were encountered with content that varies per page load.
-     *
-     * @return bool
-     */
     public static function canBeCached(): bool
     {
         return static::$canBeCached ?? true;
     }
 
-    /**
-     * Return the maximum number of minutes the rendered page should be cached.
-     *
-     * @return int
-     */
     public static function getCacheLifetime(): int
     {
-        if (! static::canBeCached()) {
-            return 0;
-        }
-        return static::$cacheLifetime;
+        return static::canBeCached() ? static::$cacheLifetime : 0;
     }
 
     /**
-     * Return an array with for each block of this page the stored html and settings data.
+     * Get stored block data for the active language.
      *
-     * @return array
+     * @return array<string,mixed>
      */
-    public function getStoredPageBlocksData()
+    public function getStoredPageBlocksData(): array
     {
-        return $this->pageData['blocks'][$this->language] ?? $this->pageData['blocks'] ?? [];
+        return $this->pageData['blocks'][$this->language]
+            ?? $this->pageData['blocks']
+            ?? [];
     }
 
     /**
-     * Return the rendered version of the page.
-     *
-     * @return string
-     * @throws Exception
+     * Render the full page.
      */
-    public function render()
+    public function render(): string
     {
-        // init variables that should be accessible in the view
+        // reset cache flags for this render cycle
+        static::$canBeCached = true;
+
         $renderer = $this;
         $page = $this->page;
-        $body = $this->forPageBuilder ? '<div phpb-content-container="true"></div>' : $this->renderBody();
+
+        $body = $this->forPageBuilder
+            ? '<div phpb-content-container="true"></div>'
+            : $this->renderBody();
 
         $layoutPath = $this->getPageLayoutPath();
+
         if ($layoutPath) {
             ob_start();
             require $layoutPath;
-            $pageHtml = ob_get_contents();
-            ob_end_clean();
+            $pageHtml = ob_get_clean() ?: '';
         } else {
             $pageHtml = $body;
         }
 
-        // parse any shortcodes present in the page layout
-        $pageHtml = $this->parseShortcodes($pageHtml);
-
-        return $pageHtml;
+        return $this->parseShortcodes($pageHtml);
     }
 
     /**
-     * Return the page body for display on the website.
-     * The body contains all blocks which are put into the selected layout.
-     *
-     * @param int $mainContainerIndex
-     * @return string
-     * @throws Exception
+     * Render page body content.
      */
-    public function renderBody($mainContainerIndex = 0)
+    public function renderBody(int $mainContainerIndex = 0): string
     {
         $html = '';
         $data = $this->pageData;
 
         if (isset($data['html']) && is_array($data['html'])) {
-            $html = $this->parseShortcodes($data['html'][$mainContainerIndex]);
-            // render html for each content container, to ensure all rendered blocks are accessible in the pagebuilder
+            $html = $this->parseShortcodes($data['html'][$mainContainerIndex] ?? '');
+
             if (phpb_in_editmode()) {
                 foreach ($data['html'] as $contentContainerHtml) {
                     $this->parseShortcodes($contentContainerHtml);
                 }
             }
-        }
-        // backwards compatibility, html stored for only one layout container (@todo: remove this at the first mayor version)
-        if (isset($data['html']) && is_string($data['html'])) {
+        } elseif (isset($data['html']) && is_string($data['html'])) {
+            // backwards compatibility
             $html = $this->parseShortcodes($data['html']);
         }
 
-        // include any style changes made via the page builder
-        if (isset($data['css'])) {
+        if (!empty($data['css'])) {
             return '<style>' . $data['css'] . '</style>' . $html;
         }
 
@@ -241,18 +190,20 @@ class PageRenderer
     }
 
     /**
-     * Return a fully rendered theme block (including children blocks) with the given slug, data instance id and data context.
-     * This method is called while parsing shortcodes.
-     *
-     * @param $slug
-     * @param null $id                  the id with which data for this block is stored
-     * @param null $context
-     * @param int $maxDepth
-     * @return string
-     * @throws Exception
+     * Render a single theme block.
      */
-    public function renderBlock($slug, $id = null, $context = null, $maxDepth = 25)
-    {
+    public function renderBlock(
+        string $slug,
+        ?string $id = null,
+        ?array $context = null,
+        int $maxDepth = 25
+    ): string {
+        if ($maxDepth <= 0) {
+            // prevent infinite recursion
+            static::setCanBeCached(false);
+            return '';
+        }
+
         $themeBlock = ($blockPath = Extensions::getBlock($slug))
             ? new ThemeBlock($this->theme, $blockPath, true, $slug)
             : new ThemeBlock($this->theme, $slug);
@@ -261,68 +212,52 @@ class PageRenderer
         $context = $context[$id] ?? $this->pageBlocksData[$id] ?? [];
 
         $blockRenderer = new BlockRenderer($this->theme, $this->page, $this->forPageBuilder);
-        $renderedBlock = $blockRenderer->render($themeBlock, $context ?? [], $id);
+        $renderedBlock = $blockRenderer->render($themeBlock, $context, $id);
 
-        // determine the context for rendering nested blocks
-        // if the current block is a html block, the context starts again at full page data
-        // if the current block is a dynamic block, use the nested block data inside the current block's context
-        $context = $context['blocks'] ?? [];
+        $nestedContext = $context['blocks'] ?? [];
         if ($themeBlock->isHtmlBlock()) {
-            $context = $this->pageBlocksData;
+            $nestedContext = $this->pageBlocksData;
         }
 
-        return $this->shortcodeParser->doShortcodes($renderedBlock, $context, $maxDepth - 1);
+        return $this->shortcodeParser->doShortcodes(
+            $renderedBlock,
+            $nestedContext,
+            $maxDepth - 1
+        );
     }
 
-    /**
-     * Parse the given html with shortcodes to fully rendered html.
-     *
-     * @param string $htmlWithShortcodes
-     * @param array $context                    the data for each block to be used while parsing the shortcodes
-     * @return string
-     * @throws Exception
-     */
-    public function parseShortcodes(string $htmlWithShortcodes, $context = null)
+    public function parseShortcodes(string $htmlWithShortcodes, ?array $context = null): string
     {
-        $context = $context ?? $this->pageBlocksData;
-        return $this->shortcodeParser->doShortcodes($htmlWithShortcodes, $context);
+        return $this->shortcodeParser->doShortcodes(
+            $htmlWithShortcodes,
+            $context ?? $this->pageBlocksData
+        );
     }
 
     /**
-     * Return this page's blocks data to be loaded into the page edited inside GrapesJS.
-     *
-     * @return array
-     * @throws Exception
+     * Return page blocks for GrapesJS editor.
      */
-    public function getPageBlocksData()
+    public function getPageBlocksData(): array
     {
         $initialLanguage = $this->language;
-
-        // remove the already rendered blocks
         $this->shortcodeParser->resetRenderedBlocks();
 
-        // create the structure of page blocks data for each language
         $pageBlocks = [];
-        foreach (phpb_active_languages() as $languageCode => $languageTranslation) {
+
+        foreach (phpb_active_languages() as $languageCode => $_) {
             $this->setLanguage($languageCode);
 
-            // for the current language build up a structure of rendered versions and use the stored data for the other languages
             if ($languageCode === $initialLanguage) {
                 $this->renderBody();
-                $pageBlocks[$languageCode] = $this->shortcodeParser->getRenderedBlocks()[$languageCode] ?? [];
+                $pageBlocks[$languageCode] =
+                    $this->shortcodeParser->getRenderedBlocks()[$languageCode] ?? null;
             } else {
-                $pageBlocks[$languageCode] = $this->pageBlocksData;
-            }
-
-            if (empty($pageBlocks[$languageCode])) {
-                $pageBlocks[$languageCode] = null;
+                $pageBlocks[$languageCode] = $this->pageBlocksData ?: null;
             }
         }
 
-        // revert to initial language
         $this->setLanguage($initialLanguage);
 
-        // return the rendered html and settings for each block
         return $pageBlocks;
     }
 }
