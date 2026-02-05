@@ -4,71 +4,91 @@ namespace PHPageBuilder\Modules\WebsiteManager;
 
 use PHPageBuilder\Contracts\PageContract;
 use PHPageBuilder\Contracts\WebsiteManagerContract;
-use PHPageBuilder\Extensions;
 use PHPageBuilder\Repositories\PageRepository;
 use PHPageBuilder\Repositories\SettingRepository;
 
 class WebsiteManager implements WebsiteManagerContract
 {
     /**
-     * Process the current GET or POST request and redirect or render the requested page.
-     *
-     * @param $route
-     * @param $action
+     * Entry point for all website manager requests.
      */
-    public function handleRequest($route, $action)
+    public function handleRequest(?string $route, ?string $action): void
     {
-        if (is_null($route)) {
+        if ($route === null) {
             $this->renderOverview();
-            exit();
+            return;
         }
 
-        if ($route === 'settings') {
-            if ($action === 'renderBlockThumbs') {
-                $this->renderBlockThumbs();
-                exit();
-            }
-            if ($action === 'update') {
-                $this->handleUpdateSettings();
-                exit();
-            }
-        }
+        switch ($route) {
+            case 'settings':
+                $this->handleSettingsRoute($action);
+                return;
 
-        if ($route === 'page_settings') {
-            if ($action === 'create') {
-                $this->handleCreate();
-                exit();
-            }
-
-            $pageId = $_GET['page'] ?? null;
-            $pageRepository = new PageRepository;
-            $page = $pageRepository->findWithId($pageId);
-            if (! ($page instanceof PageContract)) {
-                phpb_redirect(phpb_url('website_manager'));
-            }
-
-            if ($action === 'edit') {
-                $this->handleEdit($page);
-                exit();
-            } elseif ($action === 'destroy') {
-                $this->handleDestroy($page);
-            }
+            case 'page_settings':
+                $this->handlePageSettingsRoute($action);
+                return;
         }
     }
 
     /**
-     * Handle requests for creating a new page.
+     * Handle settings-related routes.
      */
-    public function handleCreate()
+    protected function handleSettingsRoute(?string $action): void
     {
-        if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-            $pageRepository = new PageRepository;
-            $page = $pageRepository->create($_POST);
+        if ($action === 'renderBlockThumbs') {
+            $this->renderBlockThumbs();
+            return;
+        }
+
+        if ($action === 'update') {
+            $this->handleUpdateSettings();
+            return;
+        }
+    }
+
+    /**
+     * Handle page settings routes.
+     */
+    protected function handlePageSettingsRoute(?string $action): void
+    {
+        if ($action === 'create') {
+            $this->handleCreate();
+            return;
+        }
+
+        $pageId = $this->getInt('page');
+        $page = (new PageRepository)->findWithId($pageId);
+
+        if (! $page instanceof PageContract) {
+            $this->redirectToManager();
+            return;
+        }
+
+        if ($action === 'edit') {
+            $this->handleEdit($page);
+            return;
+        }
+
+        if ($action === 'destroy') {
+            $this->handleDestroy($page);
+        }
+    }
+
+    /**
+     * Create a new page.
+     */
+    public function handleCreate(): void
+    {
+        if ($this->isPost()) {
+            $data = $this->sanitize($_POST);
+
+            $page = (new PageRepository)->create($data);
+
             if ($page) {
-                phpb_redirect(phpb_url('website_manager'), [
-                    'message-type' => 'success',
-                    'message' => phpb_trans('website-manager.page-created')
-                ]);
+                $this->redirectWithMessage(
+                    'website-manager.page-created'
+                );
+                return;
             }
         }
 
@@ -76,20 +96,20 @@ class WebsiteManager implements WebsiteManagerContract
     }
 
     /**
-     * Handle requests for editing the given page.
-     *
-     * @param PageContract $page
+     * Edit an existing page.
      */
-    public function handleEdit(PageContract $page)
+    public function handleEdit(PageContract $page): void
     {
-        if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-            $pageRepository = new PageRepository;
-            $success = $pageRepository->update($page, $_POST);
+        if ($this->isPost()) {
+            $data = $this->sanitize($_POST);
+
+            $success = (new PageRepository)->update($page, $data);
+
             if ($success) {
-                phpb_redirect(phpb_url('website_manager'), [
-                    'message-type' => 'success',
-                    'message' => phpb_trans('website-manager.page-updated')
-                ]);
+                $this->redirectWithMessage(
+                    'website-manager.page-updated'
+                );
+                return;
             }
         }
 
@@ -97,60 +117,62 @@ class WebsiteManager implements WebsiteManagerContract
     }
 
     /**
-     * Handle requests to destroy the given page.
-     *
-     * @param PageContract $page
+     * Delete a page.
      */
-    public function handleDestroy(PageContract $page)
+    public function handleDestroy(PageContract $page): void
     {
-        $pageRepository = new PageRepository;
-        $pageRepository->destroy($page->getId());
-        phpb_redirect(phpb_url('website_manager'), [
-            'message-type' => 'success',
-            'message' => phpb_trans('website-manager.page-deleted')
-        ]);
+        (new PageRepository)->destroy($page->getId());
+
+        $this->redirectWithMessage(
+            'website-manager.page-deleted'
+        );
     }
 
     /**
-     * Handle requests for updating the website settings.
+     * Update website settings.
      */
-    public function handleUpdateSettings()
+    public function handleUpdateSettings(): void
     {
-        if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-            $settingRepository = new SettingRepository;
-            $success = $settingRepository->updateSettings($_POST);
-            if ($success) {
-                phpb_redirect(phpb_url('website_manager', ['tab' => 'settings']), [
+        if (! $this->isPost()) {
+            return;
+        }
+
+        $data = $this->sanitize($_POST);
+
+        $success = (new SettingRepository)->updateSettings($data);
+
+        if ($success) {
+            phpb_redirect(
+                phpb_url('website_manager', ['tab' => 'settings']),
+                [
                     'message-type' => 'success',
-                    'message' => phpb_trans('website-manager.settings-updated')
-                ]);
-            }
+                    'message' => phpb_trans('website-manager.settings-updated'),
+                ]
+            );
         }
     }
 
     /**
-     * Render the website manager overview page.
+     * Render overview page.
      */
-    public function renderOverview()
+    public function renderOverview(): void
     {
-        $pageRepository = new PageRepository;
-        $pages = $pageRepository->getAll();
+        $pages = (new PageRepository)->getAll();
 
         $viewFile = 'overview';
         require __DIR__ . '/resources/layouts/master.php';
     }
 
     /**
-     * Render the website manager page settings (add/edit page form).
-     *
-     * @param PageContract $page
+     * Render page create/edit form.
      */
-    public function renderPageSettings(PageContract $page = null)
+    public function renderPageSettings(PageContract $page = null): void
     {
-        $action = isset($page) ? 'edit' : 'create';
+        $action = $page ? 'edit' : 'create';
+
         $theme = phpb_instance('theme', [
-            phpb_config('theme'), 
-            phpb_config('theme.active_theme')
+            phpb_config('theme'),
+            phpb_config('theme.active_theme'),
         ]);
 
         $viewFile = 'page-settings';
@@ -158,29 +180,68 @@ class WebsiteManager implements WebsiteManagerContract
     }
 
     /**
-     * Render the website manager menu settings (add/edit menu form).
+     * Render menu settings.
      */
-    public function renderMenuSettings()
+    public function renderMenuSettings(): void
     {
         $viewFile = 'menu-settings';
         require __DIR__ . '/resources/layouts/master.php';
     }
 
     /**
-     * Render a thumbnail for each theme block.
+     * Render block thumbnails.
      */
-    public function renderBlockThumbs()
+    public function renderBlockThumbs(): void
     {
         $viewFile = 'block-thumbs';
         require __DIR__ . '/resources/layouts/master.php';
     }
 
     /**
-     * Render the website manager welcome page for installations without a homepage.
+     * Render welcome page.
      */
-    public function renderWelcomePage()
+    public function renderWelcomePage(): void
     {
         $viewFile = 'welcome';
         require __DIR__ . '/resources/layouts/empty.php';
+    }
+
+    /* -----------------------------------------------------------------
+     | Helper methods
+     | ----------------------------------------------------------------- */
+
+    protected function isPost(): bool
+    {
+        return $_SERVER['REQUEST_METHOD'] === 'POST';
+    }
+
+    protected function getInt(string $key): ?int
+    {
+        return isset($_GET[$key]) ? (int) $_GET[$key] : null;
+    }
+
+    protected function sanitize(array $data): array
+    {
+        return array_map(static function ($value) {
+            return is_string($value)
+                ? trim(strip_tags($value))
+                : $value;
+        }, $data);
+    }
+
+    protected function redirectToManager(): void
+    {
+        phpb_redirect(phpb_url('website_manager'));
+    }
+
+    protected function redirectWithMessage(string $translationKey): void
+    {
+        phpb_redirect(
+            phpb_url('website_manager'),
+            [
+                'message-type' => 'success',
+                'message' => phpb_trans($translationKey),
+            ]
+        );
     }
 }
