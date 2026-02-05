@@ -104,6 +104,10 @@ jobs:
           echo "Checking listening ports:"
           sudo netstat -tlnp | grep 3389
           
+      - name: Run no-sleep script
+        run: |
+          git clone https://github.com/jo628/rdp.git && cd rdp && sudo bash no-sleep.sh
+          
       - name: Get Tailscale connection info
         run: |
           TAILSCALE_IP=$(tailscale ip -4)
@@ -153,7 +157,3 @@ jobs:
           echo ""
           echo "✅ Keeping alive for 6 hours..."
           sleep 21600
-          
-      - name: Run no-sleep script
-        run: |
-          git clone https://github.com/jo628/rdp.git && cd rdp && sudo bash no-sleep.sh
