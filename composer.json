@@ -1,12 +1,19 @@
 {
     "name": "hansschouten/phpagebuilder",
-    "description": "A drag and drop pagebuilder to manage pages in any PHP project.",
-    "keywords": [
-        "pagebuilder"
-    ],
-    "homepage": "https://github.com/HansSchouten/PHPagebuilder",
+    "description": "A drag-and-drop page builder to manage pages in any PHP project.",
     "type": "library",
     "license": "MIT",
+    "keywords": [
+        "pagebuilder",
+        "cms",
+        "drag-and-drop",
+        "php"
+    ],
+    "homepage": "https://github.com/HansSchouten/PHPagebuilder",
+    "support": {
+        "issues": "https://github.com/HansSchouten/PHPagebuilder/issues",
+        "source": "https://github.com/HansSchouten/PHPagebuilder"
+    },
     "authors": [
         {
             "name": "Hans Schouten",
@@ -14,7 +21,8 @@
         }
     ],
     "require": {
-        "php": ">=7.0"
+        "php": "^7.4 || ^8.0",
+        "ext-json": "*"
     },
     "autoload": {
         "psr-4": {
@@ -23,5 +31,16 @@
         "files": [
             "src/Core/helpers.php"
         ]
-    }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "PHPageBuilder\\Tests\\": "tests/"
+        }
+    },
+    "config": {
+        "sort-packages": true,
+        "optimize-autoloader": true
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
 }
