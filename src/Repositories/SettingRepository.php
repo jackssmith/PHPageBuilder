@@ -1,42 +1,47 @@
 <?php
 
+declare(strict_types=1);
+
 namespace PHPageBuilder\Repositories;
 
 use PHPageBuilder\Contracts\SettingRepositoryContract;
+use Illuminate\Support\Facades\DB;
 
 class SettingRepository extends BaseRepository implements SettingRepositoryContract
 {
     /**
-     * The pages database table.
+     * The settings database table.
      *
      * @var string
      */
     protected $table = 'settings';
 
     /**
-     * Replace all website settings by the given data.
+     * Replace all website settings with the given data.
      *
-     * @param array $data
-     * @return bool|object|null
+     * @param array<string, mixed> $data
+     * @return bool
      */
-    public function updateSettings(array $data)
+    public function updateSettings(array $data): bool
     {
-        $this->destroyAll();
-
-
-        foreach ($data as $key => $value) {
-            $isArray = is_array($value);
-            if ($isArray) {
-                $value = implode(',', $value);
-            }
-
-            $this->create([
-                'setting' => $key,
-                'value' => $value,
-                'is_array' => $isArray,
-            ]);
+        if (empty($data)) {
+            return true;
         }
 
-        return true;
+        return DB::transaction(function () use ($data) {
+            $this->destroyAll();
+
+            foreach ($data as $key => $value) {
+                $isArray = is_array($value);
+
+                $this->create([
+                    'setting'  => (string) $key,
+                    'value'    => $isArray ? json_encode($value) : (string) $value,
+                    'is_array' => $isArray,
+                ]);
+            }
+
+            return true;
+        });
     }
 }
