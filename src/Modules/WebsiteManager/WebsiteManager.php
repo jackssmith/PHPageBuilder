@@ -9,9 +9,15 @@ use PHPageBuilder\Repositories\SettingRepository;
 
 class WebsiteManager implements WebsiteManagerContract
 {
-    /**
-     * Entry point for all website manager requests.
-     */
+    public function __construct(
+        protected PageRepository $pages,
+        protected SettingRepository $settings
+    ) {}
+
+    /* -----------------------------------------------------------------
+     | Entry point
+     | ----------------------------------------------------------------- */
+
     public function handleRequest(?string $route, ?string $action): void
     {
         if ($route === null) {
@@ -19,36 +25,26 @@ class WebsiteManager implements WebsiteManagerContract
             return;
         }
 
-        switch ($route) {
-            case 'settings':
-                $this->handleSettingsRoute($action);
-                return;
-
-            case 'page_settings':
-                $this->handlePageSettingsRoute($action);
-                return;
-        }
+        match ($route) {
+            'settings'      => $this->handleSettingsRoute($action),
+            'page_settings' => $this->handlePageSettingsRoute($action),
+            default         => $this->redirectToManager(),
+        };
     }
 
-    /**
-     * Handle settings-related routes.
-     */
+    /* -----------------------------------------------------------------
+     | Route handlers
+     | ----------------------------------------------------------------- */
+
     protected function handleSettingsRoute(?string $action): void
     {
-        if ($action === 'renderBlockThumbs') {
-            $this->renderBlockThumbs();
-            return;
-        }
-
-        if ($action === 'update') {
-            $this->handleUpdateSettings();
-            return;
-        }
+        match ($action) {
+            'renderBlockThumbs' => $this->renderBlockThumbs(),
+            'update'            => $this->handleUpdateSettings(),
+            default             => $this->redirectToManager(),
+        };
     }
 
-    /**
-     * Handle page settings routes.
-     */
     protected function handlePageSettingsRoute(?string $action): void
     {
         if ($action === 'create') {
@@ -57,37 +53,33 @@ class WebsiteManager implements WebsiteManagerContract
         }
 
         $pageId = $this->getInt('page');
-        $page = (new PageRepository)->findWithId($pageId);
+        $page   = $pageId ? $this->pages->findWithId($pageId) : null;
 
         if (! $page instanceof PageContract) {
             $this->redirectToManager();
             return;
         }
 
-        if ($action === 'edit') {
-            $this->handleEdit($page);
-            return;
-        }
-
-        if ($action === 'destroy') {
-            $this->handleDestroy($page);
-        }
+        match ($action) {
+            'edit'    => $this->handleEdit($page),
+            'destroy' => $this->handleDestroy($page),
+            default   => $this->redirectToManager(),
+        };
     }
 
-    /**
-     * Create a new page.
-     */
+    /* -----------------------------------------------------------------
+     | Page actions
+     | ----------------------------------------------------------------- */
+
     public function handleCreate(): void
     {
         if ($this->isPost()) {
-            $data = $this->sanitize($_POST);
-
-            $page = (new PageRepository)->create($data);
+            $page = $this->pages->create(
+                $this->sanitize($_POST)
+            );
 
             if ($page) {
-                $this->redirectWithMessage(
-                    'website-manager.page-created'
-                );
+                $this->redirectWithMessage('website-manager.page-created');
                 return;
             }
         }
@@ -95,20 +87,16 @@ class WebsiteManager implements WebsiteManagerContract
         $this->renderPageSettings();
     }
 
-    /**
-     * Edit an existing page.
-     */
     public function handleEdit(PageContract $page): void
     {
         if ($this->isPost()) {
-            $data = $this->sanitize($_POST);
-
-            $success = (new PageRepository)->update($page, $data);
+            $success = $this->pages->update(
+                $page,
+                $this->sanitize($_POST)
+            );
 
             if ($success) {
-                $this->redirectWithMessage(
-                    'website-manager.page-updated'
-                );
+                $this->redirectWithMessage('website-manager.page-updated');
                 return;
             }
         }
@@ -116,57 +104,48 @@ class WebsiteManager implements WebsiteManagerContract
         $this->renderPageSettings($page);
     }
 
-    /**
-     * Delete a page.
-     */
     public function handleDestroy(PageContract $page): void
     {
-        (new PageRepository)->destroy($page->getId());
+        $this->pages->destroy($page->getId());
 
-        $this->redirectWithMessage(
-            'website-manager.page-deleted'
-        );
+        $this->redirectWithMessage('website-manager.page-deleted');
     }
 
-    /**
-     * Update website settings.
-     */
+    /* -----------------------------------------------------------------
+     | Settings actions
+     | ----------------------------------------------------------------- */
+
     public function handleUpdateSettings(): void
     {
         if (! $this->isPost()) {
             return;
         }
 
-        $data = $this->sanitize($_POST);
-
-        $success = (new SettingRepository)->updateSettings($data);
-
-        if ($success) {
+        if ($this->settings->updateSettings(
+            $this->sanitize($_POST)
+        )) {
             phpb_redirect(
                 phpb_url('website_manager', ['tab' => 'settings']),
                 [
                     'message-type' => 'success',
-                    'message' => phpb_trans('website-manager.settings-updated'),
+                    'message'      => phpb_trans('website-manager.settings-updated'),
                 ]
             );
         }
     }
 
-    /**
-     * Render overview page.
-     */
+    /* -----------------------------------------------------------------
+     | Rendering
+     | ----------------------------------------------------------------- */
+
     public function renderOverview(): void
     {
-        $pages = (new PageRepository)->getAll();
+        $pages = $this->pages->getAll();
 
-        $viewFile = 'overview';
-        require __DIR__ . '/resources/layouts/master.php';
+        $this->render('overview');
     }
 
-    /**
-     * Render page create/edit form.
-     */
-    public function renderPageSettings(PageContract $page = null): void
+    public function renderPageSettings(?PageContract $page = null): void
     {
         $action = $page ? 'edit' : 'create';
 
@@ -175,44 +154,37 @@ class WebsiteManager implements WebsiteManagerContract
             phpb_config('theme.active_theme'),
         ]);
 
-        $viewFile = 'page-settings';
-        require __DIR__ . '/resources/layouts/master.php';
+        $this->render('page-settings');
     }
 
-    /**
-     * Render menu settings.
-     */
     public function renderMenuSettings(): void
     {
-        $viewFile = 'menu-settings';
-        require __DIR__ . '/resources/layouts/master.php';
+        $this->render('menu-settings');
     }
 
-    /**
-     * Render block thumbnails.
-     */
     public function renderBlockThumbs(): void
     {
-        $viewFile = 'block-thumbs';
-        require __DIR__ . '/resources/layouts/master.php';
+        $this->render('block-thumbs');
     }
 
-    /**
-     * Render welcome page.
-     */
     public function renderWelcomePage(): void
     {
-        $viewFile = 'welcome';
-        require __DIR__ . '/resources/layouts/empty.php';
+        $this->render('welcome', 'empty');
+    }
+
+    protected function render(string $view, string $layout = 'master'): void
+    {
+        $viewFile = $view;
+        require __DIR__ . "/resources/layouts/{$layout}.php";
     }
 
     /* -----------------------------------------------------------------
-     | Helper methods
+     | Helpers
      | ----------------------------------------------------------------- */
 
     protected function isPost(): bool
     {
-        return $_SERVER['REQUEST_METHOD'] === 'POST';
+        return ($_SERVER['REQUEST_METHOD'] ?? '') === 'POST';
     }
 
     protected function getInt(string $key): ?int
@@ -222,11 +194,13 @@ class WebsiteManager implements WebsiteManagerContract
 
     protected function sanitize(array $data): array
     {
-        return array_map(static function ($value) {
-            return is_string($value)
-                ? trim(strip_tags($value))
-                : $value;
-        }, $data);
+        foreach ($data as $key => $value) {
+            if (is_string($value)) {
+                $data[$key] = trim(strip_tags($value));
+            }
+        }
+
+        return $data;
     }
 
     protected function redirectToManager(): void
@@ -240,7 +214,7 @@ class WebsiteManager implements WebsiteManagerContract
             phpb_url('website_manager'),
             [
                 'message-type' => 'success',
-                'message' => phpb_trans($translationKey),
+                'message'      => phpb_trans($translationKey),
             ]
         );
     }
