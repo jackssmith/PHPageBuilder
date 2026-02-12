@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace PHPageBuilder\Repositories;
 
 use PHPageBuilder\Contracts\PageTranslationRepositoryContract;
@@ -8,25 +10,30 @@ class PageTranslationRepository extends BaseRepository implements PageTranslatio
 {
     /**
      * The page translations database table.
-     *
-     * @var string
      */
-    protected $table;
+    protected string $table;
 
     /**
      * The class that represents each page translation.
-     *
-     * @var string
      */
-    protected $class;
+    protected string $class;
 
     /**
      * PageTranslationRepository constructor.
      */
-    public function __construct($table = null)
+    public function __construct(?string $table = null)
     {
-        $this->table = $table ?? (empty(phpb_config('page.translation.table')) ? 'page_translations' : phpb_config('page.translation.table'));
+        $configTable = phpb_config('page.translation.table');
+
+        $this->table = $table ?? $configTable ?? 'page_translations';
+
         parent::__construct();
+
         $this->class = phpb_instance('page.translation');
+
+        // Ensure class exists (added safety check)
+        if (!class_exists($this->class)) {
+            throw new \RuntimeException("Invalid page translation class: {$this->class}");
+        }
     }
 }
