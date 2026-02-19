@@ -23,7 +23,7 @@ class Page implements PageContract
      * @param array|null $data
      * @param bool $fullOverwrite       whether to fully overwrite or extend existing data
      */
-    public function setData($data, $fullOverwrite = true)
+    public function setData($data, $fullOverwrite = false)
     {
         // if page builder data is set, try to decode json
         if (isset($data['data']) && is_string($data['data'])) {
