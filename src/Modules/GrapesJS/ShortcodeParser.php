@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace PHPageBuilder\Modules\GrapesJS;
 
 use PHPageBuilder\Repositories\PageTranslationRepository;
@@ -8,165 +10,195 @@ use Exception;
 class ShortcodeParser
 {
     /**
-     * @var PageRenderer $pageRenderer
+     * @var PageRenderer
      */
-    protected $pageRenderer;
+    protected PageRenderer $pageRenderer;
 
     /**
-     * @var array $renderedBlocks
+     * @var array<string, array>
      */
-    protected $renderedBlocks = [];
+    protected array $renderedBlocks = [];
 
     /**
-     * @var array $pages
+     * @var array<int, string>
      */
-    protected $pages = [];
+    protected array $pages = [];
 
     /**
-     * @var string $language
+     * @var string|null
      */
-    protected $language;
+    protected ?string $language = null;
+
+    /**
+     * Maximum recursion depth safeguard.
+     */
+    protected const DEFAULT_MAX_DEPTH = 25;
 
     /**
      * ShortcodeParser constructor.
-     *
-     * @param PageRenderer $pageRenderer
      */
     public function __construct(PageRenderer $pageRenderer)
     {
         $this->pageRenderer = $pageRenderer;
 
-        $pageTranslations = (new PageTranslationRepository('page_translations'))->findWhere('locale', phpb_current_language());
+        $this->initializePageRoutes();
+    }
+
+    /**
+     * Initialize translated page routes.
+     */
+    protected function initializePageRoutes(): void
+    {
+        $pageTranslations = (new PageTranslationRepository('page_translations'))
+            ->findWhere('locale', phpb_current_language());
+
         foreach ($pageTranslations as $pageTranslation) {
             $routeTranslation = $pageTranslation->route;
+
             foreach (phpb_route_parameters() as $routeParameter => $value) {
-                $routeTranslation = str_replace('{' . $routeParameter . '}', $value, $routeTranslation);
+                $routeTranslation = str_replace(
+                    '{' . $routeParameter . '}',
+                    $value,
+                    $routeTranslation
+                );
             }
-            $this->pages[$pageTranslation->page_id] = $routeTranslation;
+
+            $this->pages[(int) $pageTranslation->page_id] = $routeTranslation;
         }
     }
 
     /**
      * Set the current language.
-     *
-     * @param $language
      */
-    public function setLanguage($language)
+    public function setLanguage(string $language): void
     {
         $this->language = $language;
     }
 
     /**
-     * Perform the tasks for all shortcodes in the given html string.
+     * Parse and execute all supported shortcodes.
      *
-     * @param $html
-     * @param array $context
-     * @param int $maxDepth
-     * @return mixed|string
      * @throws Exception
      */
-    public function doShortcodes($html, array $context = [], $maxDepth = 25)
-    {
-        if ($maxDepth === 0) {
-            throw new Exception("Maximum doShortcodes depth has been reached, "
-                . "probably due to a circular shortcode reference in one of the theme blocks.");
+    public function doShortcodes(
+        string $html,
+        array $context = [],
+        int $maxDepth = self::DEFAULT_MAX_DEPTH
+    ): string {
+        if ($maxDepth <= 0) {
+            throw new Exception(
+                'Maximum shortcode parsing depth reached. '
+                . 'Possible circular block reference detected.'
+            );
         }
 
-        $html = $this->doBlockShortcodes($html, $context, $maxDepth);
+        $html = $this->doBlockShortcodes($html, $context, $maxDepth - 1);
         $html = $this->doPageShortcodes($html);
         $html = $this->doThemeUrlShortcodes($html);
+
         return $this->doBlocksContainerShortcodes($html);
     }
 
     /**
-     * Render all blocks defined with shortcodes in the given html string.
+     * Render [block] shortcodes.
      *
-     * @param string $html
-     * @param array $context
-     * @param int $maxDepth
-     * @return string
      * @throws Exception
      */
-    protected function doBlockShortcodes($html, array $context, $maxDepth)
-    {
+    protected function doBlockShortcodes(
+        string $html,
+        array $context,
+        int $maxDepth
+    ): string {
         $matches = self::findMatches('block', $html);
-        if (empty($matches)) {
-            return $html;
-        }
 
         foreach ($matches as $match) {
-            if (! isset($match['attributes']['slug'])) {
+            $attributes = $match['attributes'] ?? [];
+
+            if (!isset($attributes['slug'])) {
                 continue;
             }
-            $slug = $match['attributes']['slug'];
-            $id = $match['attributes']['id'] ?? $slug;
+
+            $slug = $attributes['slug'];
+            $id   = $attributes['id'] ?? $slug;
+
+            // Merge inline attributes into context
             if (isset($context[$id]['settings']['attributes'])) {
-                foreach ($match['attributes'] as $attribute => $value) {
-                    if (in_array($attribute, ['id', 'slug'])) {
+                foreach ($attributes as $attribute => $value) {
+                    if (in_array($attribute, ['id', 'slug'], true)) {
                         continue;
                     }
+
                     $context[$id]['settings']['attributes'][$attribute] = $value;
                 }
             }
-            $blockHtml = $this->pageRenderer->renderBlock($slug, $id, $context, $maxDepth);
 
-            // store rendered block in a structure used for outputting all blocks to the pagebuilder
-            if (phpb_in_editmode() && strpos($id, 'ID') === 0) {
-                $this->renderedBlocks[$this->language][$id] = $context[$id] ?? [];
-                $this->renderedBlocks[$this->language][$id]['html'] = $blockHtml;
-            }
+            $blockHtml = $this->pageRenderer
+                ->renderBlock($slug, $id, $context, $maxDepth);
 
-            // replace shortcode match with the $blockHtml (note: this replaces only the first match)
-            $pos = strpos($html, $match['shortcode']);
-            if ($pos !== false) {
-                $html = substr_replace($html, $blockHtml, $pos, strlen($match['shortcode']));
-            }
+            $this->storeRenderedBlock($id, $context, $blockHtml);
+
+            // Replace only first occurrence
+            $html = $this->replaceFirst(
+                $match['shortcode'],
+                $blockHtml,
+                $html
+            );
         }
 
         return $html;
     }
 
     /**
-     * Replace all page shortcodes for the corresponding absolute page url.
-     * @todo this currently replaces the shortcode with page route instead of URL
-     *
-     * @param $html
-     * @return mixed
+     * Store rendered block in edit mode.
      */
-    protected function doPageShortcodes($html)
+    protected function storeRenderedBlock(
+        string $id,
+        array $context,
+        string $blockHtml
+    ): void {
+        if (!phpb_in_editmode() || strpos($id, 'ID') !== 0) {
+            return;
+        }
+
+        $this->renderedBlocks[$this->language ?? 'default'][$id]
+            = $context[$id] ?? [];
+
+        $this->renderedBlocks[$this->language ?? 'default'][$id]['html']
+            = $blockHtml;
+    }
+
+    /**
+     * Replace [page id="X"] shortcodes.
+     */
+    protected function doPageShortcodes(string $html): string
     {
         if (phpb_in_editmode()) {
             return $html;
         }
 
         $matches = self::findMatches('page', $html);
-        if (empty($matches)) {
-            return $html;
-        }
 
         foreach ($matches as $match) {
-            if (! isset($match['attributes']['id'])) {
+            $pageId = $match['attributes']['id'] ?? null;
+
+            if (!$pageId || !isset($this->pages[(int) $pageId])) {
                 continue;
             }
-            $pageId = $match['attributes']['id'];
 
-            $route = '';
-            if (isset($this->pages[$pageId])) {
-                $route = $this->pages[$pageId];
-            }
-            $html = str_replace($match['shortcode'], $route, $html);
+            $html = str_replace(
+                $match['shortcode'],
+                $this->pages[(int) $pageId],
+                $html
+            );
         }
 
         return $html;
     }
 
     /**
-     * Replace all [theme-url] shortcodes for the absolute URL to the theme's public folder.
-     *
-     * @param $html
-     * @return mixed
+     * Replace [theme-url] shortcode.
      */
-    protected function doThemeUrlShortcodes($html)
+    protected function doThemeUrlShortcodes(string $html): string
     {
         $matches = self::findMatches('theme-url', $html);
 
@@ -174,8 +206,11 @@ class ShortcodeParser
             return $html;
         }
 
+        $themeUrl = rtrim(phpb_config('theme.folder_url'), '/')
+            . '/'
+            . phpb_e(phpb_config('theme.active_theme'));
+
         foreach ($matches as $match) {
-            $themeUrl = phpb_config('theme.folder_url') . '/' . phpb_e(phpb_config('theme.active_theme'));
             $html = str_replace($match['shortcode'], $themeUrl, $html);
         }
 
@@ -183,94 +218,115 @@ class ShortcodeParser
     }
 
     /**
-     * Replace all [blocks-container] shortcodes for a <div phpb-blocks-container></div>
-     *
-     * @param $html
-     * @return mixed
+     * Replace [blocks-container] shortcode.
      */
-    protected function doBlocksContainerShortcodes($html)
+    protected function doBlocksContainerShortcodes(string $html): string
     {
         $matches = self::findMatches('blocks-container', $html);
 
-        if (empty($matches)) {
-            return $html;
-        }
-
         foreach ($matches as $match) {
-            $replacement = '<div phpb-blocks-container></div>';
-            $html = str_replace($match['shortcode'], $replacement, $html);
+            $html = str_replace(
+                $match['shortcode'],
+                '<div phpb-blocks-container></div>',
+                $html
+            );
         }
 
         return $html;
     }
 
     /**
-     * Return all matches of the given shortcode in the given html string.
+     * Find all shortcode matches in HTML.
      *
-     * @param $shortcode
-     * @param $html
-     * @return array            an array with for each $shortcode occurrence an array of attributes
+     * @return array<int, array{shortcode:string, attributes:array}>
      */
-    public static function findMatches($shortcode, $html)
-    {
-        // RegEx: https://www.regextester.com/104625
-        $regex = '/\[' . $shortcode . '(\s.*?)?\](?:([^\[]+)?\[\/' . $shortcode . '\])?/';
-        preg_match_all($regex, $html, $pregMatchAll);
-        $fullMatches = $pregMatchAll[0];
-        $matchAttributeStrings = $pregMatchAll[1];
+    public static function findMatches(
+        string $shortcode,
+        string $html
+    ): array {
+        $regex = sprintf(
+            '/\[%s(\s[^\]]*)?\](?:([^\[]+)?\[\/%s\])?/',
+            preg_quote($shortcode, '/'),
+            preg_quote($shortcode, '/')
+        );
 
-        // loop through the attribute strings of each $shortcode instance and add the parsed variants to $matches
-        $matches = [];
-        foreach ($matchAttributeStrings as $i => $matchAttributeString) {
-            $matchAttributeString = trim($matchAttributeString);
+        preg_match_all($regex, $html, $matches, PREG_SET_ORDER);
 
-            // as long as there are attributes in the attributes string, add them to $attributes
-            $attributes = [];
-            while (strpos($matchAttributeString, '=') !== false) {
-                list($attribute, $remainingString) = explode('=', $matchAttributeString, 2);
-                $attribute = trim($attribute);
+        $results = [];
 
-                // if first char is " and at least two " exist, get attribute value between ""
-                if (strpos($remainingString, '"') === 0 && strpos($remainingString, '"', 1) !== false) {
-                    list($empty, $value, $remainingString) = explode('"', $remainingString, 3);
-                    $attributes[$attribute] = $value;
-                } elseif (strpos($remainingString, ' ') !== false) {
-                    // attribute value was not between "", get value until next whitespace or until end of $remainingString
-                    list($value, $remainingString) = explode(' ', $remainingString, 2);
-                    $attributes[$attribute] = $value;
-                } else {
-                    $attributes[$attribute] = $remainingString;
-                    $remainingString = '';
-                }
+        foreach ($matches as $match) {
+            $attributeString = trim($match[1] ?? '');
+            $attributes = self::parseAttributes($attributeString);
 
-                $matchAttributeString = $remainingString;
-            }
-
-            $matches[] = [
-                'shortcode' => $fullMatches[$i],
-                'attributes' => $attributes
+            $results[] = [
+                'shortcode'  => $match[0],
+                'attributes' => $attributes,
             ];
         }
 
-        return $matches;
+        return $results;
     }
 
     /**
-     * Reset the structure of all rendered blocks.
+     * Parse shortcode attributes using regex.
      */
-    public function resetRenderedBlocks()
+    protected static function parseAttributes(string $input): array
+    {
+        if ($input === '') {
+            return [];
+        }
+
+        preg_match_all(
+            '/(\w+)=["\']?([^"\']+)["\']?/',
+            $input,
+            $matches,
+            PREG_SET_ORDER
+        );
+
+        $attributes = [];
+
+        foreach ($matches as $match) {
+            $attributes[$match[1]] = $match[2];
+        }
+
+        return $attributes;
+    }
+
+    /**
+     * Replace first occurrence of a string.
+     */
+    protected function replaceFirst(
+        string $search,
+        string $replace,
+        string $subject
+    ): string {
+        $pos = strpos($subject, $search);
+
+        if ($pos === false) {
+            return $subject;
+        }
+
+        return substr_replace(
+            $subject,
+            $replace,
+            $pos,
+            strlen($search)
+        );
+    }
+
+    /**
+     * Reset rendered blocks storage.
+     */
+    public function resetRenderedBlocks(): void
     {
         $this->renderedBlocks = [];
     }
 
     /**
-     * Return the array of all blocks rendered while parsing shortcodes.
-     *
-     * @return array
+     * Get all rendered blocks.
      */
-    public function getRenderedBlocks()
+    public function getRenderedBlocks(): array
     {
         return $this->renderedBlocks;
     }
-
 }
