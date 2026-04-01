@@ -1,244 +1,238 @@
 <?php
 
+declare(strict_types=1);
+
 namespace PHPageBuilder\Repositories;
 
 use PHPageBuilder\Core\DB;
+use InvalidArgumentException;
 
-/**
- * Class BaseRepository
- *
- * The base repository passes CRUD calls to DB and initialises class instances for records returned from DB.
- *
- * @package PHPageBuilder\Repositories
- */
-class BaseRepository
+abstract class BaseRepository
 {
-    /**
-     * @var DB $db
-     */
-    protected $db;
+    protected DB $db;
+    protected string $table;
+    protected ?string $class = null;
 
     /**
-     * The database table of this repository.
-     * Note: do not replace this value with user input.
-     *
-     * @var string
+     * Optionally define allowed columns to prevent SQL injection
+     * @var string[]
      */
-    protected $table;
+    protected array $allowedColumns = [];
 
-    /**
-     * The class that represents each record of this repository's table.
-     *
-     * @var string
-     */
-    protected $class;
-
-    /**
-     * Repository constructor.
-     */
-    public function __construct()
+    public function __construct(?DB $db = null)
     {
         global $phpb_db;
-        $this->db = $phpb_db;
 
-        // apply the configured prefix to the table set in the superclass and remove non-alphanumeric characters
-        $this->table = phpb_config('storage.database.prefix') . $this->removeNonAlphaNumeric($this->table);
+        $this->db = $db ?? $phpb_db;
+
+        if (empty($this->table)) {
+            throw new InvalidArgumentException('Table name must be defined in repository.');
+        }
+
+        $this->table = phpb_config('storage.database.prefix') . $this->sanitize($this->table);
     }
 
-    /**
-     * Create a new instance using the given data.
-     *
-     * @param array $data
-     * @return object|null
-     */
-    protected function create(array $data)
-    {
-        $columns = array_keys($data);
-        foreach ($columns as &$column) {
-            $column = $this->removeNonAlphaNumeric($column);
-        }
-        $columns = implode(', ', $columns);
-        $questionMarks = implode(', ', array_fill(0, count($data), '?'));
+    /* ---------------------------------
+     | CRUD
+     |---------------------------------*/
 
-        $this->db->query(
-            "INSERT INTO {$this->table} ({$columns}) VALUES ({$questionMarks})",
-            array_values($data)
+    protected function create(array $data): ?object
+    {
+        $data = $this->filterColumns($data);
+
+        if (empty($data)) {
+            throw new InvalidArgumentException('No valid data provided for insert.');
+        }
+
+        $columns = array_keys($data);
+        $placeholders = array_fill(0, count($data), '?');
+
+        $sql = sprintf(
+            "INSERT INTO %s (%s) VALUES (%s)",
+            $this->table,
+            implode(', ', $columns),
+            implode(', ', $placeholders)
         );
+
+        $this->db->query($sql, array_values($data));
 
         $id = $this->db->lastInsertId();
-        if ($id) {
-            return $this->findWithId($id);
-        }
-        return null;
+
+        return $id ? $this->findById((int)$id) : null;
     }
 
-    /**
-     * Update the record with the given id with the given updated data.
-     *
-     * @param $instance
-     * @param array $data
-     * @return bool
-     */
-    protected function update($instance, array $data)
+    protected function update(object $instance, array $data): bool
     {
-        $set = '';
-        foreach ($data as $column => $value) {
-            if ($set !== '') {
-                $set .= ', ';
-            }
-            $set .= $this->removeNonAlphaNumeric($column) . '=?';
+        $data = $this->filterColumns($data);
+
+        if (empty($data)) {
+            return false;
         }
 
-        $values = array_values($data);
-        $values[] = $instance->id ?? $instance->getId();
+        $id = $this->extractId($instance);
 
-        return $this->db->query(
-            "UPDATE {$this->table} SET {$set} WHERE id=?",
-            $values
-        );
+        $set = implode(', ', array_map(
+            fn($col) => "{$col} = ?",
+            array_keys($data)
+        ));
+
+        $sql = "UPDATE {$this->table} SET {$set} WHERE id = ?";
+
+        return $this->db->query($sql, [
+            ...array_values($data),
+            $id
+        ]);
     }
 
-    /**
-     * Remove the given instance from the database.
-     *
-     * @param $id
-     * @return bool
-     */
-    public function destroy($id)
+    public function delete(int|string $id): bool
     {
         return $this->db->query(
-            "DELETE FROM {$this->table} WHERE id=?",
+            "DELETE FROM {$this->table} WHERE id = ?",
             [$id]
         );
     }
 
-    /**
-     * Remove all instances from the database that satisfy the given condition.
-     *
-     * @param string $column
-     * @param $value
-     * @return bool
-     */
-    public function destroyWhere(string $column, $value)
+    public function deleteWhere(string $column, mixed $value): bool
     {
-        $column = $this->removeNonAlphaNumeric($column);
+        $column = $this->validateColumn($column);
+
         return $this->db->query(
-            "DELETE FROM {$this->table} WHERE {$column}=?",
+            "DELETE FROM {$this->table} WHERE {$column} = ?",
             [$value]
         );
     }
 
-    /**
-     * Remove all instances from the database.
-     *
-     * @return bool
-     */
-    public function destroyAll()
+    public function deleteAll(): bool
     {
-        return $this->db->query(
-            "DELETE FROM {$this->table}"
+        return $this->db->query("DELETE FROM {$this->table}");
+    }
+
+    /* ---------------------------------
+     | Queries
+     |---------------------------------*/
+
+    public function getAll(array|string $columns = '*'): array
+    {
+        $columns = $this->prepareColumns($columns);
+
+        return $this->hydrateMany(
+            $this->db->all($this->table, $columns)
         );
     }
 
-    /**
-     * Return an array of all pages.
-     *
-     * @param array|string $columns
-     * @return array
-     */
-    public function getAll($columns = '*')
+    public function findById(int|string $id): ?object
     {
-        if (is_array($columns)) {
-            foreach ($columns as &$column) {
-                $column = $this->removeNonAlphaNumeric($column);
-            }
-        }
-        return $this->createInstances($this->db->all($this->table, $columns));
+        return $this->hydrateOne(
+            $this->db->findWithId($this->table, $id)
+        );
     }
 
-    /**
-     * Return the instance with the given id, or null.
-     *
-     * @param string $id
-     * @return object|null
-     */
-    public function findWithId($id)
+    public function findWhere(string $column, mixed $value): array
     {
-        return $this->createInstance($this->db->findWithId($this->table, $id));
-    }
+        $column = $this->validateColumn($column);
 
-    /**
-     * Return the instances for which the given condition holds.
-     *
-     * @param string $column         do NOT pass user input here
-     * @param string $value
-     * @return array
-     */
-    public function findWhere($column, $value)
-    {
-        $column = $this->removeNonAlphaNumeric($column);
-        return $this->createInstances($this->db->select(
+        $records = $this->db->select(
             "SELECT * FROM {$this->table} WHERE {$column} = ?",
             [$value]
-        ));
+        );
+
+        return $this->hydrateMany($records);
     }
 
-    /**
-     * Remove any non-alphanumeric characters.
-     *
-     * @param string $string
-     * @return string|null
-     */
-    protected function removeNonAlphaNumeric(string $string)
+    /* ---------------------------------
+     | Hydration
+     |---------------------------------*/
+
+    protected function hydrateOne(array $records): ?object
     {
-        return preg_replace('/\W*/', '', $string);
+        $items = $this->hydrateMany($records);
+        return $items[0] ?? null;
     }
 
-    /**
-     * Create an instance using the first record.
-     *
-     * @param array $records
-     * @return object|null
-     */
-    protected function createInstance(array $records)
+    protected function hydrateMany(array $records): array
     {
-        $instances = $this->createInstances($records);
-        if (empty($instances)) {
-            return null;
-        }
-        return $instances[0];
-    }
-
-    /**
-     * For each record create an instance.
-     *
-     * @param array $records
-     * @return array
-     */
-    protected function createInstances(array $records)
-    {
-        $result = [];
-
-        if (empty($this->class)) {
+        if (!$this->class) {
             return $records;
         }
 
-        foreach ($records as $record) {
-            $instance = new $this->class;
-            if (method_exists($instance, 'setData')) {
-                $data = [];
-                foreach($record as $k => $v) {
-                    $data[$k] = $v;
-                }
-                $instance->setData($data);
-            } else {
-                foreach($record as $k => $v) {
-                    $instance->$k = $v;
-                }
-            }
-            $result[] = $instance;
+        return array_map(fn($record) => $this->hydrate($record), $records);
+    }
+
+    protected function hydrate(array $record): object
+    {
+        $instance = new $this->class();
+
+        if (method_exists($instance, 'setData')) {
+            $instance->setData($record);
+            return $instance;
         }
 
-        return $result;
+        foreach ($record as $key => $value) {
+            $instance->{$key} = $value;
+        }
+
+        return $instance;
+    }
+
+    /* ---------------------------------
+     | Helpers
+     |---------------------------------*/
+
+    protected function extractId(object $instance): int|string
+    {
+        if (isset($instance->id)) {
+            return $instance->id;
+        }
+
+        if (method_exists($instance, 'getId')) {
+            return $instance->getId();
+        }
+
+        throw new InvalidArgumentException('Instance has no identifiable ID.');
+    }
+
+    protected function prepareColumns(array|string $columns): array|string
+    {
+        if ($columns === '*') {
+            return '*';
+        }
+
+        return array_map(fn($col) => $this->validateColumn($col), $columns);
+    }
+
+    protected function filterColumns(array $data): array
+    {
+        $filtered = [];
+
+        foreach ($data as $column => $value) {
+            if ($this->isAllowedColumn($column)) {
+                $filtered[$this->sanitize($column)] = $value;
+            }
+        }
+
+        return $filtered;
+    }
+
+    protected function validateColumn(string $column): string
+    {
+        if (!$this->isAllowedColumn($column)) {
+            throw new InvalidArgumentException("Column '{$column}' is not allowed.");
+        }
+
+        return $this->sanitize($column);
+    }
+
+    protected function isAllowedColumn(string $column): bool
+    {
+        if (empty($this->allowedColumns)) {
+            return true; // fallback (less secure, but flexible)
+        }
+
+        return in_array($column, $this->allowedColumns, true);
+    }
+
+    protected function sanitize(string $value): string
+    {
+        return preg_replace('/[^a-zA-Z0-9_]/', '', $value);
     }
 }
