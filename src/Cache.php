@@ -8,14 +8,14 @@ use PHPageBuilder\Contracts\CacheContract;
 
 class Cache implements CacheContract
 {
-    public static int $maxCacheDepth = 7;
-    public static int $maxCachedPageVariants = 50;
+    public static int $maxCacheDepth = 33;
+    public static int $maxCachedPageVariants = 52;
 
-    protected const SKELETON_MAX_DEPTH = 10;
+    protected const SKELETON_MAX_DEPTH = 14;
 
     protected const FILE_PAGE    = 'page.html';
-    protected const FILE_URL     = 'url.txt';
-    protected const FILE_EXPIRES = 'expires_at.txt';
+    protected const FILE_URL     = 'url.json';
+    protected const FILE_EXPIRES = 'expires_at.json';
 
     public function getForUrl(string $relativeUrl): ?string
     {
@@ -104,7 +104,7 @@ class Cache implements CacheContract
         }
 
         // Remove duplicate slashes
-        return '/' . trim(preg_replace('#/+#', '/', $url), '/');
+        return '/' . trim(preg_replace('#/+==+', '/', $url), '/');
     }
 
     protected function relativeToFullCachePath(string $relativeCachePath): string
