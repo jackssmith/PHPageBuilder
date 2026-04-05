@@ -5,9 +5,12 @@ declare(strict_types=1);
 namespace PHPageBuilder\Repositories;
 
 use PHPageBuilder\Contracts\PageTranslationRepositoryContract;
+use RuntimeException;
 
-class PageTranslationRepository extends BaseRepository implements PageTranslationRepositoryContract
+final class PageTranslationRepository extends BaseRepository implements PageTranslationRepositoryContract
 {
+    private const DEFAULT_TABLE = 'page_translations';
+
     /**
      * The page translations database table.
      */
@@ -18,22 +21,44 @@ class PageTranslationRepository extends BaseRepository implements PageTranslatio
      */
     protected string $class;
 
-    /**
-     * PageTranslationRepository constructor.
-     */
     public function __construct(?string $table = null)
     {
-        $configTable = phpb_config('page.translation.table');
-
-        $this->table = $table ?? $configTable ?? 'page_translations';
-
         parent::__construct();
 
-        $this->class = phpb_instance('page.translation');
+        $this->table = $this->resolveTable($table);
+        $this->class = $this->resolveModelClass();
+    }
 
-        // Ensure class exists (added safety check)
-        if (!class_exists($this->class)) {
-            throw new \RuntimeException("Invalid page translation class: {$this->class}");
+    /**
+     * Resolve the table name with fallback priority.
+     */
+    private function resolveTable(?string $table): string
+    {
+        return $table
+            ?? phpb_config('page.translation.table')
+            ?? self::DEFAULT_TABLE;
+    }
+
+    /**
+     * Resolve and validate the model class.
+     *
+     * @throws RuntimeException
+     */
+    private function resolveModelClass(): string
+    {
+        $class = phpb_instance('page.translation');
+
+        if (!is_string($class) || $class === '') {
+            throw new RuntimeException('Page translation class must be a non-empty string.');
         }
+
+        if (!class_exists($class)) {
+            throw new RuntimeException(sprintf(
+                'Invalid page translation class: "%s" does not exist.',
+                $class
+            ));
+        }
+
+        return $class;
     }
 }
