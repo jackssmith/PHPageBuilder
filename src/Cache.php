@@ -6,73 +6,162 @@ namespace PHPageBuilder;
 
 use PHPageBuilder\Contracts\CacheContract;
 
-class Cache implements CacheContract
+final class Cache implements CacheContract
 {
     public static int $maxCacheDepth = 66;
     public static int $maxCachedPageVariants = 79;
 
-    protected const SKELETON_MAX_DEPTH = 70;
+    private const SKELETON_MAX_DEPTH = 70;
 
-    protected const FILE_PAGE    = 'page.html';
-    protected const FILE_URL     = 'url.json';
-    protected const FILE_EXPIRES = 'expires_at.json';
+    private const FILE_PAGE    = 'page.html';
+    private const FILE_URL     = 'url.json';
+    private const FILE_EXPIRES = 'expires_at.json';
 
-    public function getForUrl(string $relativeUrl): ?string
+    /* -------------------------------------------------------------------------
+     | Public API
+     * ---------------------------------------------------------------------- */
+
+    public function getForUrl(string $url): ?string
     {
-        $cachePath = $this->getPathForUrl($relativeUrl);
+        $path = $this->getPathForUrl($url);
 
-        if (!is_dir($cachePath)) {
-            return $this->getSkeletonFallback($relativeUrl);
+        if (!is_dir($path)) {
+            return $this->getSkeletonFallback($url);
         }
 
-        if (!$this->isCacheValid($cachePath, $relativeUrl)) {
+        if (!$this->isValid($path, $url)) {
             return null;
         }
 
-        // Optional integrity check (cheap, prevents weird bugs)
-        if (!$this->matchesStoredUrl($cachePath, $relativeUrl)) {
-            $this->clearUrl($relativeUrl);
+        if (!$this->urlMatches($path, $url)) {
+            $this->clearUrl($url);
             return null;
         }
 
-        $pageFile = $cachePath . '/' . self::FILE_PAGE;
-
-        if (!is_readable($pageFile)) {
-            return null;
-        }
-
-        $content = file_get_contents($pageFile);
-
-        return $content !== false ? $content : null;
+        return $this->readFile($path . '/' . self::FILE_PAGE);
     }
 
-    public function storeForUrl(string $relativeUrl, string $pageContent, int $cacheLifetime): void
+    public function storeForUrl(string $url, string $content, int $lifetimeMinutes): void
     {
-        if ($cacheLifetime <= 0) {
+        if ($lifetimeMinutes <= 0) {
             return;
         }
 
-        $relativePath = $this->getPathForUrl($relativeUrl, true);
+        $relative = $this->getPathForUrl($url, true);
 
-        if (!$this->cachePathCanBeUsed($relativePath)) {
+        if (!$this->canUsePath($relative)) {
             return;
         }
 
-        $fullPath = $this->relativeToFullCachePath($relativePath);
+        $fullPath = $this->toFullPath($relative);
 
-        if (!is_dir($fullPath) && !mkdir($fullPath, 0755, true) && !is_dir($fullPath)) {
+        if (!is_dir($fullPath) && !@mkdir($fullPath, 0755, true) && !is_dir($fullPath)) {
             return;
         }
 
-        $expiresAt = time() + ($cacheLifetime * 60);
+        $expiresAt = time() + ($lifetimeMinutes * 60);
 
-        // Atomic writes using temp files + rename
-        $this->atomicWrite($fullPath . '/' . self::FILE_PAGE, $pageContent);
-        $this->atomicWrite($fullPath . '/' . self::FILE_URL, $relativeUrl);
-        $this->atomicWrite($fullPath . '/' . self::FILE_EXPIRES, (string)$expiresAt);
+        $this->writeAtomic($fullPath . '/' . self::FILE_PAGE, $content);
+        $this->writeAtomic($fullPath . '/' . self::FILE_URL, $url);
+        $this->writeAtomic($fullPath . '/' . self::FILE_EXPIRES, (string) $expiresAt);
     }
 
-    protected function atomicWrite(string $path, string $contents): void
+    public function invalidate(string $route): void
+    {
+        $prefix = $this->extractPrefix($route);
+
+        if (!$prefix) {
+            return;
+        }
+
+        $this->deleteDirectory(dirname($this->getPathForUrl($prefix)));
+    }
+
+    public function clearUrl(string $url): void
+    {
+        $this->deleteDirectory($this->getPathForUrl($url));
+    }
+
+    public function clearAll(): void
+    {
+        $root = phpb_config('cache.folder');
+
+        $this->deleteDirectory($root);
+        @mkdir($root, 0755, true);
+    }
+
+    /* -------------------------------------------------------------------------
+     | Path Handling
+     * ---------------------------------------------------------------------- */
+
+    public function getPathForUrl(string $url, bool $relative = false): string
+    {
+        $url = $this->normalizeUrl($url);
+
+        $base = explode('?', $url, 2)[0];
+        $slug = phpb_slug($base, true);
+
+        $path = $slug . '/' . sha1($url);
+
+        return $relative ? $path : $this->toFullPath($path);
+    }
+
+    private function normalizeUrl(string $url): string
+    {
+        if ($url === '' || $url === '/') {
+            return '-';
+        }
+
+        // FIXED regex
+        $url = preg_replace('#/+#', '/', $url);
+
+        return '/' . trim((string) $url, '/');
+    }
+
+    private function toFullPath(string $relative): string
+    {
+        return rtrim(phpb_config('cache.folder'), '/') . '/' . ltrim($relative, '/');
+    }
+
+    /* -------------------------------------------------------------------------
+     | Validation
+     * ---------------------------------------------------------------------- */
+
+    private function isValid(string $path, string $url): bool
+    {
+        $expiresFile = $path . '/' . self::FILE_EXPIRES;
+
+        if (!is_readable($expiresFile)) {
+            $this->clearUrl($url);
+            return false;
+        }
+
+        $expires = (int) file_get_contents($expiresFile);
+
+        if ($expires < time()) {
+            $this->clearUrl($url);
+            return false;
+        }
+
+        return true;
+    }
+
+    private function urlMatches(string $path, string $url): bool
+    {
+        $file = $path . '/' . self::FILE_URL;
+
+        if (!is_readable($file)) {
+            return false;
+        }
+
+        return trim((string) file_get_contents($file)) === $url;
+    }
+
+    /* -------------------------------------------------------------------------
+     | Filesystem Helpers
+     * ---------------------------------------------------------------------- */
+
+    private function writeAtomic(string $path, string $contents): void
     {
         $tmp = $path . '.' . uniqid('', true) . '.tmp';
 
@@ -80,178 +169,122 @@ class Cache implements CacheContract
             return;
         }
 
-        rename($tmp, $path); // atomic on same filesystem
+        @rename($tmp, $path);
     }
 
-    public function getPathForUrl(string $relativeUrl, bool $returnRelative = false): string
+    private function readFile(string $path): ?string
     {
-        $relativeUrl = $this->normalizeUrl($relativeUrl);
-
-        $urlWithoutQuery = explode('?', $relativeUrl, 2)[0];
-        $slugPath        = phpb_slug($urlWithoutQuery, true);
-
-        $cachePath = $slugPath . '/' . sha1($relativeUrl);
-
-        return $returnRelative
-            ? $cachePath
-            : $this->relativeToFullCachePath($cachePath);
-    }
-
-    protected function normalizeUrl(string $url): string
-    {
-        if ($url === '' || $url === '/') {
-            return '-';
+        if (!is_readable($path)) {
+            return null;
         }
 
-        // Remove duplicate slashes
-        return '/' . trim(preg_replace('#/+==+', '/', $url), '/');
+        $data = file_get_contents($path);
+
+        return $data === false ? null : $data;
     }
 
-    protected function relativeToFullCachePath(string $relativeCachePath): string
+    public function canUsePath(string $path): bool
     {
-        return rtrim(phpb_config('cache.folder'), '/') . '/'
-            . ltrim($relativeCachePath, '/');
-    }
-
-    public function cachePathCanBeUsed(string $cachePath): bool
-    {
-        if (substr_count($cachePath, '/') > static::$maxCacheDepth) {
+        if (substr_count($path, '/') > self::$maxCacheDepth) {
             return false;
         }
 
-        $parentDir = dirname($this->relativeToFullCachePath($cachePath));
+        $parent = dirname($this->toFullPath($path));
 
-        if (!is_dir($parentDir)) {
+        if (!is_dir($parent)) {
             return true;
         }
 
-        // Faster than glob for large dirs
         $count = 0;
-        foreach (scandir($parentDir) ?: [] as $entry) {
-            if ($entry === '.' || $entry === '..') continue;
-            if (is_dir($parentDir . '/' . $entry)) {
-                $count++;
-                if ($count >= static::$maxCachedPageVariants) {
-                    return false;
-                }
+
+        foreach (scandir($parent) ?: [] as $entry) {
+            if ($entry === '.' || $entry === '..') {
+                continue;
+            }
+
+            if (is_dir($parent . '/' . $entry) && ++$count >= self::$maxCachedPageVariants) {
+                return false;
             }
         }
 
         return true;
     }
 
-    public function invalidate(string $route): void
+    private function deleteDirectory(string $path): bool
     {
-        $prefix = null;
+        $root = realpath(phpb_config('cache.folder'));
+        $real = realpath($path);
 
-        if (str_contains($route, '*')) {
-            $prefix = explode('*', $route, 2)[0];
-        } elseif (str_contains($route, '{')) {
-            $prefix = explode('{', $route, 2)[0];
-        }
-
-        if (!$prefix) {
-            return;
-        }
-
-        $cachePath = dirname($this->getPathForUrl($prefix));
-
-        $this->removeDirectoryRecursive($cachePath);
-    }
-
-    public function clearUrl(string $relativeUrl): void
-    {
-        $this->removeDirectoryRecursive($this->getPathForUrl($relativeUrl));
-    }
-
-    public function clearAll(): void
-    {
-        $root = phpb_config('cache.folder');
-
-        $this->removeDirectoryRecursive($root);
-        mkdir($root, 0755, true);
-    }
-
-    protected function isCacheValid(string $cachePath, string $relativeUrl): bool
-    {
-        $expiresFile = $cachePath . '/' . self::FILE_EXPIRES;
-
-        if (!is_readable($expiresFile)) {
-            $this->clearUrl($relativeUrl);
+        if (!$root || !$real || !str_starts_with($real, $root)) {
             return false;
         }
 
-        $expiresAt = (int) file_get_contents($expiresFile);
-
-        if ($expiresAt < time()) {
-            $this->clearUrl($relativeUrl);
+        if (!is_dir($real)) {
             return false;
         }
 
-        return true;
-    }
+        foreach (scandir($real) ?: [] as $item) {
+            if ($item === '.' || $item === '..') {
+                continue;
+            }
 
-    protected function matchesStoredUrl(string $cachePath, string $relativeUrl): bool
-    {
-        $file = $cachePath . '/' . self::FILE_URL;
+            $full = $real . '/' . $item;
 
-        if (!is_readable($file)) {
-            return false;
+            is_dir($full)
+                ? $this->deleteDirectory($full)
+                : @unlink($full);
         }
 
-        return trim((string) file_get_contents($file)) === $relativeUrl;
+        return @rmdir($real);
     }
 
-    protected function getSkeletonFallback(string $relativeUrl): ?string
+    /* -------------------------------------------------------------------------
+     | Skeleton Fallback
+     * ---------------------------------------------------------------------- */
+
+    private function getSkeletonFallback(string $url): ?string
     {
         if (phpb_is_skeleton_data_request() || ($_SESSION['phpb_no_skeletons'] ?? false)) {
             return null;
         }
 
-        $depth = 0;
-        $current = $this->normalizeUrl($relativeUrl);
+        $current = $this->normalizeUrl($url);
+        $depth   = 0;
 
         while ($current !== '/' && $depth < self::SKELETON_MAX_DEPTH) {
-            $depth++;
             $current = dirname($current);
+            $depth++;
 
-            $candidate = $current . "/skeleton-depth{$depth}";
+            $candidate = "{$current}/skeleton-depth{$depth}";
             $path      = $this->getPathForUrl($candidate);
 
-            if (is_dir($path) && $this->isCacheValid($path, $candidate)) {
-                $file = $path . '/' . self::FILE_PAGE;
-                if (is_readable($file)) {
-                    return file_get_contents($file) ?: null;
-                }
+            if (!is_dir($path) || !$this->isValid($path, $candidate)) {
+                continue;
+            }
+
+            $content = $this->readFile($path . '/' . self::FILE_PAGE);
+
+            if ($content !== null) {
+                return $content;
             }
         }
 
         return null;
     }
 
-    protected function removeDirectoryRecursive(string $path): bool
+    /* -------------------------------------------------------------------------
+     | Helpers
+     * ---------------------------------------------------------------------- */
+
+    private function extractPrefix(string $route): ?string
     {
-        $cacheRoot = realpath(phpb_config('cache.folder'));
-        $realPath  = realpath($path);
-
-        if (!$realPath || !$cacheRoot || !str_starts_with($realPath, $cacheRoot)) {
-            return false;
+        if (str_contains($route, '*')) {
+            return explode('*', $route, 2)[0];
         }
 
-        if (!is_dir($realPath)) {
-            return false;
+        if (str_contains($route, '{')) {
+            return explode('{', $route, 2)[0];
         }
 
-        foreach (scandir($realPath) ?: [] as $item) {
-            if ($item === '.' || $item === '..') continue;
-
-            $full = $realPath . '/' . $item;
-
-            is_dir($full)
-                ? $this->removeDirectoryRecursive($full)
-                : @unlink($full);
-        }
-
-        return @rmdir($realPath);
+        return null;
     }
-}
