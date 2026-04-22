@@ -6,124 +6,168 @@ namespace PHPageBuilder;
 
 use PHPageBuilder\Contracts\SettingContract;
 use PHPageBuilder\Repositories\SettingRepository;
+use RuntimeException;
 
-class Setting implements SettingContract
+final class Setting implements SettingContract
 {
-    /**
-     * Cached settings loaded from the database.
-     *
-     * @var array<string, mixed>|null
-     */
-    protected static ?array $settings = null;
+    private array $settings = [];
+    private bool $loaded = false;
+    private bool $immutable = false;
+
+    public function __construct(
+        private readonly SettingRepository $repository
+    ) {}
 
     /**
-     * Load all settings from the database into memory.
+     * Load settings from repository
      */
-    protected static function loadSettings(): void
+    public function load(): void
     {
-        self::$settings = [];
+        $this->settings = [];
 
-        $repository = new SettingRepository();
-
-        // Ensure the repository returns valid data
-        $settingsData = $repository->getAll();
-        if (empty($settingsData)) {
-            return; // No settings to load
+        foreach ($this->repository->getAll() as $row) {
+            $this->settings[$row['setting']] = $this->castValue(
+                $row['value'],
+                (bool) $row['is_array']
+            );
         }
 
-        foreach ($settingsData as $setting) {
-            $value = $setting['value'];
+        $this->loaded = true;
+    }
 
-            // If the value is an array (stored as a comma-separated string), process it
-            if ((bool) $setting['is_array']) {
-                $value = array_values(
-                    array_filter(
-                        array_map('trim', explode(',', (string) $value)),
-                        static fn($v) => $v !== ''
-                    )
-                );
+    /**
+     * Ensure settings are loaded
+     */
+    private function ensureLoaded(): void
+    {
+        if (!$this->loaded) {
+            $this->load();
+        }
+    }
+
+    /**
+     * Cast stored value
+     */
+    private function castValue(mixed $value, bool $isArray): mixed
+    {
+        if ($isArray) {
+            return array_values(
+                array_filter(
+                    array_map('trim', explode(',', (string) $value)),
+                    static fn ($v) => $v !== ''
+                )
+            );
+        }
+
+        return $value;
+    }
+
+    /**
+     * Enable immutable mode
+     */
+    public function lock(): void
+    {
+        $this->immutable = true;
+    }
+
+    /**
+     * Get value using dot notation
+     */
+    public function get(string $key, mixed $default = null): mixed
+    {
+        $this->ensureLoaded();
+
+        $segments = explode('.', $key);
+        $value = $this->settings;
+
+        foreach ($segments as $segment) {
+            if (!is_array($value) || !array_key_exists($segment, $value)) {
+                return $default;
             }
+            $value = $value[$segment];
+        }
 
-            self::$settings[$setting['setting']] = $value;
+        return $value;
+    }
+
+    /**
+     * Typed getters
+     */
+    public function getString(string $key, string $default = ''): string
+    {
+        return (string) $this->get($key, $default);
+    }
+
+    public function getInt(string $key, int $default = 0): int
+    {
+        return (int) $this->get($key, $default);
+    }
+
+    public function getBool(string $key, bool $default = false): bool
+    {
+        return (bool) $this->get($key, $default);
+    }
+
+    public function getArray(string $key, array $default = []): array
+    {
+        $value = $this->get($key, $default);
+        return is_array($value) ? $value : [$value];
+    }
+
+    /**
+     * Set runtime value (optionally persist)
+     */
+    public function set(string $key, mixed $value, bool $persist = false): void
+    {
+        if ($this->immutable) {
+            throw new RuntimeException('Settings are locked (immutable mode enabled)');
+        }
+
+        $this->ensureLoaded();
+
+        $this->settings[$key] = $value;
+
+        if ($persist) {
+            $this->repository->update($key, $value);
         }
     }
 
     /**
-     * Ensure settings are loaded into memory.
+     * Check existence
      */
-    protected static function ensureLoaded(): void
+    public function exists(string $key): bool
     {
-        if (self::$settings === null) {
-            self::loadSettings();
-        }
+        $this->ensureLoaded();
+        return array_key_exists($key, $this->settings);
     }
 
     /**
-     * Reload all settings from the database.
+     * Match value
      */
-    public static function reload(): void
+    public function has(string $key, mixed $value): bool
     {
-        self::$settings = null;
-        self::ensureLoaded();
+        $current = $this->get($key);
+
+        return is_array($current)
+            ? in_array($value, $current, true)
+            : $current === $value;
     }
 
     /**
-     * Get the value of a setting.
-     *
-     * @param string $key The setting key.
-     * @param mixed $default The default value if the setting doesn't exist.
-     * @return mixed The value of the setting.
+     * Reload from storage
      */
-    public static function get(string $key, mixed $default = null): mixed
+    public function reload(): void
     {
-        self::ensureLoaded();
-
-        // Return setting if exists, otherwise default
-        return self::$settings[$key] ?? $default;
+        $this->loaded = false;
+        $this->load();
     }
 
     /**
-     * Set or override a setting value at runtime.
-     *
-     * @param string $key The setting key.
-     * @param mixed $value The value to set.
+     * Get all settings
      */
-    public static function set(string $key, mixed $value): void
+    public function all(): array
     {
-        self::ensureLoaded();
-
-        self::$settings[$key] = $value;
-    }
-
-    /**
-     * Determine if the given setting exists.
-     *
-     * @param string $key The setting key.
-     * @return bool True if the setting exists, false otherwise.
-     */
-    public static function exists(string $key): bool
-    {
-        self::ensureLoaded();
-
-        return array_key_exists($key, self::$settings);
-    }
-
-    /**
-     * Determine whether the given setting exists and matches the provided value.
-     *
-     * @param string $key The setting key.
-     * @param mixed $value The value to match.
-     * @return bool True if the setting exists and matches, false otherwise.
-     */
-    public static function has(string $key, mixed $value): bool
-    {
-        self::ensureLoaded();
-
-        // Check if the setting exists and matches the provided value
-        return self::exists($key) && (
-            is_array(self::$settings[$key])
-                ? in_array($value, self::$settings[$key], true)
-                : self::$settings[$key] === $value
-        );
+        $this->ensureLoaded();
+        return $this->settings;
     }
 }
