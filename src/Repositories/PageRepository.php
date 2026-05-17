@@ -1,15 +1,41 @@
 <?php
 
+declare(strict_types=1);
+
 namespace PHPageBuilder\Repositories;
 
-use PHPageBuilder\Contracts\PageContract;
-use PHPageBuilder\Contracts\PageRepositoryContract;
 use Exception;
 use InvalidArgumentException;
+use JsonException;
+use PHPageBuilder\Contracts\PageContract;
+use PHPageBuilder\Contracts\PageRepositoryContract;
+use PHPageBuilder\Repositories\Contracts\TranslationRepositoryInterface;
 
+/**
+ * Class PageRepository
+ *
+ * Handles all database operations related to pages.
+ * This repository is responsible for:
+ * - Creating pages
+ * - Updating pages
+ * - Managing translations
+ * - Updating JSON page data
+ * - Cache invalidation
+ * - Validation logic
+ */
 class PageRepository extends BaseRepository implements PageRepositoryContract
 {
-    protected const REQUIRED_PAGE_FIELDS = ['name', 'layout'];
+    /**
+     * Required fields for page creation/update.
+     */
+    protected const REQUIRED_FIELDS = [
+        'name',
+        'layout',
+    ];
+
+    /**
+     * Fields that require translations.
+     */
     protected const TRANSLATABLE_FIELDS = [
         'title',
         'meta_title',
@@ -18,24 +44,43 @@ class PageRepository extends BaseRepository implements PageRepositoryContract
     ];
 
     /**
-     * The pages database table.
-     *
-     * @var string
+     * Database table name.
      */
     protected string $table;
 
     /**
-     * The class that represents each page.
-     *
-     * @var string
+     * Page model class.
      */
     protected string $class;
 
-    public function __construct()
-    {
+    /**
+     * Translation repository instance.
+     */
+    protected TranslationRepositoryInterface $translationRepository;
+
+    /**
+     * Foreign key used in translations table.
+     */
+    protected string $translationForeignKey;
+
+    /**
+     * PageRepository constructor.
+     */
+    public function __construct(
+        ?TranslationRepositoryInterface $translationRepository = null
+    ) {
         $this->table = phpb_config('page.table') ?: 'pages';
+
         parent::__construct();
+
         $this->class = phpb_instance('page');
+
+        $this->translationForeignKey = (string) phpb_config(
+            'page.translation.foreign_key'
+        );
+
+        $this->translationRepository = $translationRepository
+            ?: new PageTranslationRepository();
     }
 
     /**
@@ -45,114 +90,233 @@ class PageRepository extends BaseRepository implements PageRepositoryContract
      */
     public function create(array $data): PageContract
     {
-        $this->validatePageFields($data);
+        $this->validatePagePayload($data);
 
+        /** @var mixed $page */
         $page = parent::create([
-            'name'   => $data['name'],
-            'layout' => $data['layout'],
+            'name'   => trim($data['name']),
+            'layout' => trim($data['layout']),
         ]);
 
         if (! $page instanceof PageContract) {
-            throw new Exception('Created page does not implement PageContract.');
+            throw new Exception(
+                'The created page instance must implement PageContract.'
+            );
         }
 
-        $this->replaceTranslations($page, $data);
+        $this->syncTranslations($page, $data);
+
+        $this->clearPageCache($page);
 
         return $page;
     }
 
     /**
-     * Update the given page.
+     * Update an existing page.
      */
     public function update(PageContract $page, array $data): bool
     {
-        $this->validatePageFields($data);
+        $this->validatePagePayload($data);
 
-        $this->replaceTranslations($page, $data);
+        $this->syncTranslations($page, $data);
 
         $updated = parent::update($page, [
-            'name'   => $data['name'],
-            'layout' => $data['layout'],
+            'name'   => trim($data['name']),
+            'layout' => trim($data['layout']),
         ]);
 
-        $page->invalidateCache();
+        $this->clearPageCache($page);
 
         return (bool) $updated;
     }
 
     /**
-     * Replace the translations of the given page.
+     * Update page JSON data.
      *
-     * @throws InvalidArgumentException
+     * @throws JsonException
      */
-    protected function replaceTranslations(PageContract $page, array $data): void
-    {
-        $activeLanguages = phpb_active_languages();
+    public function updatePageData(
+        PageContract $page,
+        array $data
+    ): bool {
+        $encodedData = json_encode(
+            $data,
+            JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE
+        );
 
-        foreach (self::TRANSLATABLE_FIELDS as $field) {
-            foreach ($activeLanguages as $locale => $_) {
-                if (! isset($data[$field][$locale])) {
-                    throw new InvalidArgumentException(
-                        "Missing translation for field '{$field}' and locale '{$locale}'."
-                    );
-                }
-            }
-        }
-
-        $translationRepository = new PageTranslationRepository();
-        $foreignKey = phpb_config('page.translation.foreign_key');
-
-        $translationRepository->destroyWhere($foreignKey, $page->getId());
-
-        foreach ($activeLanguages as $locale => $_) {
-            $translationRepository->create([
-                $foreignKey        => $page->getId(),
-                'locale'           => $locale,
-                'title'            => $data['title'][$locale],
-                'meta_title'       => $data['meta_title'][$locale],
-                'meta_description' => $data['meta_description'][$locale],
-                'route'            => $data['route'][$locale],
-            ]);
-        }
-    }
-
-    /**
-     * Update structured page data (JSON).
-     */
-    public function updatePageData(PageContract $page, array $data): bool
-    {
         $updated = parent::update($page, [
-            'data' => json_encode($data, JSON_THROW_ON_ERROR),
+            'data' => $encodedData,
         ]);
 
-        $page->invalidateCache();
+        $this->clearPageCache($page);
 
         return (bool) $updated;
     }
 
     /**
-     * Remove the given page from the database.
+     * Delete page by ID.
      */
     public function destroy(int $id): bool
     {
         $page = $this->findWithId($id);
 
         if ($page instanceof PageContract) {
-            $page->invalidateCache();
+            $this->clearPageCache($page);
         }
 
         return parent::destroy($id);
     }
 
     /**
-     * Validate required page fields.
+     * Synchronize page translations.
+     *
+     * @throws InvalidArgumentException
      */
-    protected function validatePageFields(array $data): void
-    {
-        foreach (self::REQUIRED_PAGE_FIELDS as $field) {
-            if (! isset($data[$field]) || ! is_string($data[$field])) {
-                throw new InvalidArgumentException("Invalid or missing field: {$field}");
+    protected function syncTranslations(
+        PageContract $page,
+        array $data
+    ): void {
+        $languages = phpb_active_languages();
+
+        $this->validateTranslations($data, $languages);
+
+        $this->deleteExistingTranslations($page);
+
+        foreach ($languages as $locale => $language) {
+            $this->createTranslationRecord(
+                $page,
+                $locale,
+                $data
+            );
+        }
+    }
+
+    /**
+     * Validate all required translation fields.
+     *
+     * @throws InvalidArgumentException
+     */
+    protected function validateTranslations(
+        array $data,
+        array $languages
+    ): void {
+        foreach (self::TRANSLATABLE_FIELDS as $field) {
+            if (! isset($data[$field]) || ! is_array($data[$field])) {
+                throw new InvalidArgumentException(
+                    "Translation field '{$field}' must be an array."
+                );
+            }
+
+            foreach ($languages as $locale => $language) {
+                if (
+                    ! isset($data[$field][$locale]) ||
+                    ! is_string($data[$field][$locale])
+                ) {
+                    throw new InvalidArgumentException(
+                        "Missing or invalid translation for '{$field}' in locale '{$locale}'."
+                    );
+                }
             }
         }
+    }
+
+    /**
+     * Remove old translations before inserting new ones.
+     */
+    protected function deleteExistingTranslations(
+        PageContract $page
+    ): void {
+        $this->translationRepository->destroyWhere(
+            $this->translationForeignKey,
+            $page->getId()
+        );
+    }
+
+    /**
+     * Create translation record.
+     */
+    protected function createTranslationRecord(
+        PageContract $page,
+        string $locale,
+        array $data
+    ): void {
+        $this->translationRepository->create([
+            $this->translationForeignKey => $page->getId(),
+            'locale'                     => $locale,
+            'title'                      => $data['title'][$locale],
+            'meta_title'                 => $data['meta_title'][$locale],
+            'meta_description'           => $data['meta_description'][$locale],
+            'route'                      => $data['route'][$locale],
+        ]);
+    }
+
+    /**
+     * Validate required page payload fields.
+     *
+     * @throws InvalidArgumentException
+     */
+    protected function validatePagePayload(array $data): void
+    {
+        foreach (self::REQUIRED_FIELDS as $field) {
+            if (! array_key_exists($field, $data)) {
+                throw new InvalidArgumentException(
+                    "Required field '{$field}' is missing."
+                );
+            }
+
+            if (! is_string($data[$field])) {
+                throw new InvalidArgumentException(
+                    "Field '{$field}' must be a string."
+                );
+            }
+
+            if (trim($data[$field]) === '') {
+                throw new InvalidArgumentException(
+                    "Field '{$field}' cannot be empty."
+                );
+            }
+        }
+    }
+
+    /**
+     * Invalidate page cache safely.
+     */
+    protected function clearPageCache(PageContract $page): void
+    {
+        if (method_exists($page, 'invalidateCache')) {
+            $page->invalidateCache();
+        }
+    }
+
+    /**
+     * Determine whether a page exists.
+     */
+    public function exists(int $id): bool
+    {
+        return $this->findWithId($id) instanceof PageContract;
+    }
+
+    /**
+     * Get all active languages.
+     */
+    protected function getActiveLanguages(): array
+    {
+        return phpb_active_languages();
+    }
+
+    /**
+     * Get repository table name.
+     */
+    public function getTable(): string
+    {
+        return $this->table;
+    }
+
+    /**
+     * Get page model class.
+     */
+    public function getModelClass(): string
+    {
+        return $this->class;
     }
 }
