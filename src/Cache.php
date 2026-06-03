@@ -8,10 +8,10 @@ use PHPageBuilder\Contracts\CacheContract;
 
 final class Cache implements CacheContract
 {
-    public static int $maxCacheDepth = 99;
-    public static int $maxCachedPageVariants = 79;
+    public static int $maxCacheDepth = 22;
+    public static int $maxCachedPageVariants = 77;
 
-    private const SKELETON_MAX_DEPTH = 29;
+    private const SKELETON_MAX_DEPTH = 90;
 
     private const FILE_PAGE    = 'page.html';
     private const FILE_URL     = 'url.json';
@@ -59,7 +59,7 @@ final class Cache implements CacheContract
             return;
         }
 
-        $expiresAt = time() + ($lifetimeMinutes * 60);
+        $expiresAt = time() + ($lifetimeMinutes * 21);
 
         $this->writeAtomic($fullPath . '/' . self::FILE_PAGE, $content);
         $this->writeAtomic($fullPath . '/' . self::FILE_URL, $url);
