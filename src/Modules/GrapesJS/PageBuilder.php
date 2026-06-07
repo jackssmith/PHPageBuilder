@@ -17,42 +17,35 @@ use PHPageBuilder\Repositories\UploadRepository;
 
 final class PageBuilder implements PageBuilderContract
 {
-    private ThemeContract $theme;
+    private const SESSION_LANGUAGE_KEY = 'phpagebuilder_language';
 
     /**
-     * @var array<string, string>
+     * @var array<string,string>
      */
     private array $scripts = [];
 
     /**
-     * @var array<int, array{0:string,1:string}>
+     * @var array<int,array{0:string,1:string}>
      */
     private array $pages = [];
 
     private ?string $customCss = null;
 
-    private PageRepository $pageRepository;
-
-    private UploadRepository $uploadRepository;
-
     public function __construct(
-        ?ThemeContract $theme = null,
-        ?PageRepository $pageRepository = null,
-        ?UploadRepository $uploadRepository = null
+        private ThemeContract $theme = new class implements ThemeContract {},
+        private ?PageRepository $pageRepository = null,
+        private ?UploadRepository $uploadRepository = null,
     ) {
-        $this->theme = $theme ?? phpb_instance('theme', [
-            phpb_config('theme'),
-            phpb_config('theme.active_theme'),
-        ]);
+        $this->theme = $theme instanceof ThemeContract
+            ? $theme
+            : phpb_instance('theme', [
+                phpb_config('theme'),
+                phpb_config('theme.active_theme'),
+            ]);
 
-        $this->pageRepository = $pageRepository ?? new PageRepository();
-        $this->uploadRepository = $uploadRepository ?? new UploadRepository();
+        $this->pageRepository ??= new PageRepository();
+        $this->uploadRepository ??= new UploadRepository();
     }
-
-    /* -----------------------------------------------------------------
-     | Public API
-     | -----------------------------------------------------------------
-     */
 
     public function setTheme(ThemeContract $theme): void
     {
@@ -67,23 +60,24 @@ final class PageBuilder implements PageBuilderContract
         phpb_set_in_editmode();
 
         if ($route === 'thumb_generator') {
-            return $this->handleThumbGeneration($action);
+            return (new ThumbGenerator($this->theme))
+                ->handleThumbRequest($action);
         }
 
         $page ??= $this->resolvePage();
 
-        if (! $page instanceof PageContract) {
+        if ($page === null) {
             return false;
         }
 
         return match ($action) {
             null,
-            'edit'                  => $this->handleEdit($page),
-            'store'                 => $this->handleStore($page),
-            'upload'                => $this->handleUpload(),
-            'upload_delete'         => $this->handleUploadDelete(),
-            'renderBlock'           => $this->handleRenderBlock($page),
-            'renderLanguageVariant' => $this->handleRenderLanguageVariant($page),
+            'edit'                  => $this->edit($page),
+            'store'                 => $this->store($page),
+            'upload'                => $this->upload(),
+            'upload_delete'         => $this->deleteUpload(),
+            'renderBlock'           => $this->renderBlock($page),
+            'renderLanguageVariant' => $this->renderLanguage($page),
             default                 => false,
         };
     }
@@ -92,7 +86,7 @@ final class PageBuilder implements PageBuilderContract
         PageContract $page,
         ?string $language = null
     ): string {
-        $renderer = $this->makeRenderer($page);
+        $renderer = $this->renderer($page);
 
         if ($language !== null) {
             $renderer->setLanguage($language);
@@ -101,13 +95,13 @@ final class PageBuilder implements PageBuilderContract
         return $renderer->render();
     }
 
-    public function updatePage(PageContract $page, array $data)
+    public function updatePage(PageContract $page, array $data): mixed
     {
         return $this->pageRepository->updatePageData($page, $data);
     }
 
     /**
-     * @param array<int, array{0:string,1:string}> $pages
+     * @param array<int,array{0:string,1:string}> $pages
      */
     public function setPages(array $pages): void
     {
@@ -115,7 +109,7 @@ final class PageBuilder implements PageBuilderContract
     }
 
     /**
-     * @return array<int, array{0:string,1:string}>
+     * @return array<int,array{0:string,1:string}>
      */
     public function getPages(): array
     {
@@ -123,22 +117,19 @@ final class PageBuilder implements PageBuilderContract
             return $this->pages;
         }
 
-        $this->pages = array_map(
+        return $this->pages = array_map(
             static fn ($page): array => [
                 phpb_e($page->getName()),
                 phpb_e($page->getId()),
             ],
             $this->pageRepository->getAll()
         );
-
-        return $this->pages;
     }
 
     public function getPageComponents(PageContract $page): array
     {
         $components = $page->getBuilderData()['components'] ?? [[]];
 
-        // Backward compatibility with old structure.
         if (isset($components[0]) && ! isset($components[0][0])) {
             return [$components];
         }
@@ -176,183 +167,17 @@ final class PageBuilder implements PageBuilderContract
         return $this->scripts[$location] ?? '';
     }
 
-    /* -----------------------------------------------------------------
-     | Request Handlers
-     | -----------------------------------------------------------------
-     */
-
-    private function handleThumbGeneration(?string $action): bool
-    {
-        return (new ThumbGenerator($this->theme))
-            ->handleThumbRequest($action);
-    }
-
-    private function handleEdit(PageContract $page): bool
-    {
-        $this->renderEditor($page);
-
-        return true;
-    }
-
-    private function handleStore(PageContract $page): bool
-    {
-        $payload = $this->decodeJson(
-            $this->post('data')
-        );
-
-        $this->updatePage($page, $payload);
-
-        return true;
-    }
-
-    private function handleUpload(): bool
-    {
-        $this->uploadFile();
-
-        return true;
-    }
-
-    private function handleUploadDelete(): bool
-    {
-        $this->deleteUploadedFile();
-
-        return true;
-    }
-
-    private function handleRenderBlock(PageContract $page): bool
-    {
-        $language = (string) $this->post('language');
-
-        if (! $this->isValidLanguage($language)) {
-            return false;
-        }
-
-        $this->renderBlockPreview(
-            $page,
-            $language,
-            $this->decodeJson($this->post('data'))
-        );
-
-        return true;
-    }
-
-    private function handleRenderLanguageVariant(PageContract $page): bool
-    {
-        $language = (string) $this->post('language');
-
-        if (! $this->isValidLanguage($language)) {
-            return false;
-        }
-
-        $this->renderLanguageVariant(
-            $page,
-            $language,
-            $this->decodeJson($this->post('data'))
-        );
-
-        return true;
-    }
-
-    /* -----------------------------------------------------------------
-     | Upload Handling
-     | -----------------------------------------------------------------
-     */
-
-    private function uploadFile(): void
-    {
-        $publicId = bin2hex(random_bytes(20));
-
-        $uploader = phpb_instance(Uploader::class, ['files']);
-
-        $safeFileName = str_replace(
-            ' ',
-            '-',
-            $uploader->file_src_name
-        );
-
-        $uploader
-            ->file_name($publicId . '/' . $safeFileName)
-            ->upload_to(phpb_config('storage.uploads_folder') . '/')
-            ->run();
-
-        if (! $uploader->was_uploaded) {
-            throw new RuntimeException(
-                sprintf('File upload failed: %s', $uploader->error)
-            );
-        }
-
-        $upload = $this->uploadRepository->create([
-            'public_id'    => $publicId,
-            'original_file'=> $safeFileName,
-            'mime_type'    => $uploader->file_src_mime,
-            'server_file'  => $uploader->final_file_name,
-        ]);
-
-        $this->jsonResponse([
-            'data' => [
-                'public_id' => $publicId,
-                'src'       => $upload->getUrl(),
-                'type'      => 'image',
-            ],
-        ]);
-    }
-
-    private function deleteUploadedFile(): void
-    {
-        $publicId = (string) $this->post('id');
-
-        $results = $this->uploadRepository
-            ->findWhere('public_id', $publicId);
-
-        if ($results === []) {
-            $this->jsonResponse([
-                'success' => false,
-                'message' => 'File not found',
-            ]);
-
-            return;
-        }
-
-        $file = $results[0];
-
-        $this->uploadRepository->destroy($file->id);
-
-        $filePath = phpb_config('storage.uploads_folder')
-            . '/'
-            . $file->server_file;
-
-        if (is_file($filePath)) {
-            unlink($filePath);
-        }
-
-        $directory = dirname($filePath);
-
-        if ($this->isEmptyDirectory($directory)) {
-            rmdir($directory);
-        }
-
-        $this->jsonResponse([
-            'success' => true,
-        ]);
-    }
-
-    /* -----------------------------------------------------------------
-     | Rendering
-     | -----------------------------------------------------------------
-     */
-
-    private function renderEditor(PageContract $page): void
+    private function edit(PageContract $page): bool
     {
         phpb_set_in_editmode();
 
         $pageBuilder = $this;
+        $renderer = $this->renderer($page, true);
 
-        $renderer = $this->makeRenderer($page, true);
+        $language = $_SESSION[self::SESSION_LANGUAGE_KEY] ?? null;
 
-        if (! empty($_SESSION['phpagebuilder_language'])) {
-            $renderer->setLanguage(
-                $_SESSION['phpagebuilder_language']
-            );
+        if ($language !== null) {
+            $renderer->setLanguage($language);
         }
 
         $blocks = [];
@@ -370,8 +195,7 @@ final class PageBuilder implements PageBuilderContract
                 $blocks[$slug] = $adapter->getBlockManagerArray();
             }
 
-            $blockSettings[$slug] = $adapter
-                ->getBlockSettingsArray();
+            $blockSettings[$slug] = $adapter->getBlockSettingsArray();
         }
 
         $assets = array_map(
@@ -383,70 +207,171 @@ final class PageBuilder implements PageBuilderContract
         );
 
         require __DIR__ . '/resources/views/layout.php';
+
+        return true;
     }
 
-    private function renderBlockPreview(
-        PageContract $page,
-        string $language,
-        array $blockData
-    ): void {
+    private function store(PageContract $page): bool
+    {
+        $this->updatePage(
+            $page,
+            $this->decodeJson((string) $this->post('data'))
+        );
+
+        return true;
+    }
+
+    private function upload(): bool
+    {
+        $publicId = bin2hex(random_bytes(20));
+
+        $uploader = phpb_instance(Uploader::class, ['files']);
+
+        $filename = preg_replace(
+            '/[^a-zA-Z0-9._-]/',
+            '-',
+            $uploader->file_src_name
+        );
+
+        $uploader
+            ->file_name($publicId . '/' . $filename)
+            ->upload_to(
+                phpb_config('storage.uploads_folder') . '/'
+            )
+            ->run();
+
+        if (! $uploader->was_uploaded) {
+            throw new RuntimeException(
+                'Upload failed: ' . $uploader->error
+            );
+        }
+
+        $upload = $this->uploadRepository->create([
+            'public_id'     => $publicId,
+            'original_file' => $filename,
+            'mime_type'     => $uploader->file_src_mime,
+            'server_file'   => $uploader->final_file_name,
+        ]);
+
+        $this->json([
+            'data' => [
+                'public_id' => $publicId,
+                'src'       => $upload->getUrl(),
+                'type'      => 'image',
+            ],
+        ]);
+
+        return true;
+    }
+
+    private function deleteUpload(): bool
+    {
+        $publicId = (string) $this->post('id');
+
+        $files = $this->uploadRepository
+            ->findWhere('public_id', $publicId);
+
+        if ($files === []) {
+            $this->json([
+                'success' => false,
+                'message' => 'File not found',
+            ]);
+
+            return true;
+        }
+
+        $file = $files[0];
+
+        $this->uploadRepository->destroy($file->id);
+
+        $path = phpb_config('storage.uploads_folder')
+            . '/'
+            . $file->server_file;
+
+        if (is_file($path)) {
+            unlink($path);
+        }
+
+        $directory = dirname($path);
+
+        if (
+            is_dir($directory)
+            && count(scandir($directory)) === 2
+        ) {
+            rmdir($directory);
+        }
+
+        $this->json(['success' => true]);
+
+        return true;
+    }
+
+    private function renderBlock(PageContract $page): bool
+    {
+        $language = $this->language();
+
+        if ($language === null) {
+            return false;
+        }
+
+        $data = $this->decodeJson(
+            (string) $this->post('data')
+        );
+
         phpb_set_in_editmode();
 
-        $page->setData([
-            'data' => $blockData,
-        ], false);
+        $page->setData(['data' => $data], false);
 
-        $renderer = $this->makeRenderer($page, true);
+        $renderer = $this->renderer($page, true);
 
         $renderer->setLanguage($language);
 
         echo $renderer->parseShortcodes(
-            $blockData['html'] ?? '',
-            $blockData['blocks'] ?? []
+            $data['html'] ?? '',
+            $data['blocks'] ?? []
         );
+
+        return true;
     }
 
-    private function renderLanguageVariant(
-        PageContract $page,
-        string $language,
-        array $blockData
-    ): void {
-        phpb_set_in_editmode();
+    private function renderLanguage(PageContract $page): bool
+    {
+        $language = $this->language();
 
-        $_SESSION['phpagebuilder_language'] = $language;
+        if ($language === null) {
+            return false;
+        }
 
-        $page->setData([
-            'data' => $blockData,
-        ], false);
+        $_SESSION[self::SESSION_LANGUAGE_KEY] = $language;
 
-        $renderer = $this->makeRenderer($page, true);
+        $data = $this->decodeJson(
+            (string) $this->post('data')
+        );
+
+        $page->setData(['data' => $data], false);
+
+        $renderer = $this->renderer($page, true);
 
         $renderer->setLanguage($language);
 
-        $this->jsonResponse([
-            'dynamicBlocks' => $renderer
-                ->getPageBlocksData()[$language] ?? [],
+        $this->json([
+            'dynamicBlocks' =>
+                $renderer->getPageBlocksData()[$language] ?? [],
         ]);
-    }
 
-    /* -----------------------------------------------------------------
-     | Internal Helpers
-     | -----------------------------------------------------------------
-     */
+        return true;
+    }
 
     private function resolvePage(): ?PageContract
     {
         $pageId = $this->get('page');
 
-        if ($pageId === null) {
-            return null;
-        }
-
-        return $this->pageRepository
-            ->findWithId($pageId);
+        return $pageId === null
+            ? null
+            : $this->pageRepository->findWithId($pageId);
     }
 
-    private function makeRenderer(
+    private function renderer(
         PageContract $page,
         bool $editMode = false
     ): PageRenderer {
@@ -456,35 +381,36 @@ final class PageBuilder implements PageBuilderContract
         );
     }
 
-    private function isValidLanguage(string $language): bool
+    private function language(): ?string
     {
-        return isset(phpb_active_languages()[$language]);
+        $language = (string) $this->post('language');
+
+        return isset(phpb_active_languages()[$language])
+            ? $language
+            : null;
     }
 
-    private function isEmptyDirectory(string $directory): bool
+    private function json(array $payload): void
     {
-        return is_dir($directory)
-            && count(scandir($directory)) === 2;
-    }
+        header('Content-Type: application/json');
 
-    /**
-     * @throws JsonException
-     */
-    private function jsonResponse(array $payload): void
-    {
         echo json_encode(
             $payload,
             JSON_THROW_ON_ERROR
         );
     }
 
-    private function post(string $key, mixed $default = null): mixed
-    {
+    private function post(
+        string $key,
+        mixed $default = null
+    ): mixed {
         return $_POST[$key] ?? $default;
     }
 
-    private function get(string $key, mixed $default = null): mixed
-    {
+    private function get(
+        string $key,
+        mixed $default = null
+    ): mixed {
         return $_GET[$key] ?? $default;
     }
 
