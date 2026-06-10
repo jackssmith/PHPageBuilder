@@ -8,6 +8,7 @@ use ArrayAccess;
 use ArrayIterator;
 use Countable;
 use IteratorAggregate;
+use JsonException;
 use JsonSerializable;
 use PHPageBuilder\Contracts\SettingContract;
 use PHPageBuilder\Repositories\SettingRepository;
@@ -21,60 +22,40 @@ final class Setting implements
     Countable,
     JsonSerializable
 {
-    /**
-     * Loaded settings container
-     */
     private array $settings = [];
 
-    /**
-     * Settings loaded state
-     */
     private bool $loaded = false;
 
-    /**
-     * Immutable state
-     */
     private bool $locked = false;
 
     public function __construct(
         private readonly SettingRepository $repository
-    ) {}
+    ) {
+    }
 
-    /**
-     * Static factory
-     */
     public static function create(
         SettingRepository $repository
     ): self {
-        $instance = new self($repository);
-
-        $instance->load();
-
-        return $instance;
+        return (new self($repository))->load();
     }
 
-    /**
-     * Load all settings
-     */
     public function load(): self
     {
-        $this->settings = [];
+        $settings = [];
 
         foreach ($this->repository->getAll() as $row) {
-            $this->settings[$row['setting']] = $this->parseValue(
+            $settings[$row['setting']] = $this->transformValue(
                 $row['value'],
-                (bool) $row['is_array']
+                (bool) ($row['is_array'] ?? false)
             );
         }
 
+        $this->settings = $settings;
         $this->loaded = true;
 
         return $this;
     }
 
-    /**
-     * Reload settings
-     */
     public function reload(): self
     {
         $this->loaded = false;
@@ -82,52 +63,6 @@ final class Setting implements
         return $this->load();
     }
 
-    /**
-     * Ensure data is loaded
-     */
-    private function ensureLoaded(): void
-    {
-        if (!$this->loaded) {
-            $this->load();
-        }
-    }
-
-    /**
-     * Parse repository value
-     */
-    private function parseValue(
-        mixed $value,
-        bool $isArray
-    ): mixed {
-        if (!$isArray) {
-            return $value;
-        }
-
-        return $this->normalizeArray(
-            explode(',', (string) $value)
-        );
-    }
-
-    /**
-     * Normalize array items
-     */
-    private function normalizeArray(
-        array $items
-    ): array {
-        return array_values(
-            array_filter(
-                array_map(
-                    static fn ($item): string => trim((string) $item),
-                    $items
-                ),
-                static fn ($item): bool => $item !== ''
-            )
-        );
-    }
-
-    /**
-     * Lock settings
-     */
     public function lock(): self
     {
         $this->locked = true;
@@ -135,9 +70,6 @@ final class Setting implements
         return $this;
     }
 
-    /**
-     * Unlock settings
-     */
     public function unlock(): self
     {
         $this->locked = false;
@@ -145,40 +77,24 @@ final class Setting implements
         return $this;
     }
 
-    /**
-     * Check lock state
-     */
     public function isLocked(): bool
     {
         return $this->locked;
     }
 
-    /**
-     * Assert mutability
-     */
-    private function assertMutable(): void
-    {
-        if ($this->locked) {
-            throw new RuntimeException(
-                'Settings are locked.'
-            );
-        }
-    }
-
-    /**
-     * Get setting using dot notation
-     */
     public function get(
         string $key,
         mixed $default = null
     ): mixed {
         $this->ensureLoaded();
 
-        $segments = explode('.', $key);
+        if ($key === '') {
+            return $this->settings;
+        }
 
         $value = $this->settings;
 
-        foreach ($segments as $segment) {
+        foreach (explode('.', $key) as $segment) {
             if (
                 !is_array($value) ||
                 !array_key_exists($segment, $value)
@@ -192,9 +108,6 @@ final class Setting implements
         return $value;
     }
 
-    /**
-     * Get string value
-     */
     public function getString(
         string $key,
         string $default = ''
@@ -202,9 +115,6 @@ final class Setting implements
         return (string) $this->get($key, $default);
     }
 
-    /**
-     * Get integer value
-     */
     public function getInt(
         string $key,
         int $default = 0
@@ -212,9 +122,6 @@ final class Setting implements
         return (int) $this->get($key, $default);
     }
 
-    /**
-     * Get float value
-     */
     public function getFloat(
         string $key,
         float $default = 0.0
@@ -222,9 +129,6 @@ final class Setting implements
         return (float) $this->get($key, $default);
     }
 
-    /**
-     * Get boolean value
-     */
     public function getBool(
         string $key,
         bool $default = false
@@ -232,9 +136,6 @@ final class Setting implements
         return (bool) $this->get($key, $default);
     }
 
-    /**
-     * Get array value
-     */
     public function getArray(
         string $key,
         array $default = []
@@ -246,50 +147,55 @@ final class Setting implements
             : [$value];
     }
 
-    /**
-     * Set setting value
-     */
     public function set(
         string $key,
         mixed $value,
         bool $persist = false
     ): self {
         $this->assertMutable();
-
         $this->ensureLoaded();
 
-        $this->settings[$key] = $value;
+        $segments = explode('.', $key);
+        $current = &$this->settings;
+
+        while (count($segments) > 1) {
+            $segment = array_shift($segments);
+
+            if (
+                !isset($current[$segment]) ||
+                !is_array($current[$segment])
+            ) {
+                $current[$segment] = [];
+            }
+
+            $current = &$current[$segment];
+        }
+
+        $current[array_shift($segments)] = $value;
 
         if ($persist) {
-            $this->repository->update(
-                $key,
-                $value
-            );
+            $this->repository->update($key, $value);
         }
 
         return $this;
     }
 
-    /**
-     * Remove setting
-     */
     public function remove(
         string $key
     ): self {
         $this->assertMutable();
+        $this->ensureLoaded();
 
         unset($this->settings[$key]);
 
         return $this;
     }
 
-    /**
-     * Merge settings
-     */
     public function merge(
         array $settings
     ): self {
         $this->assertMutable();
+        $this->ensureLoaded();
 
         $this->settings = array_replace_recursive(
             $this->settings,
@@ -299,23 +205,12 @@ final class Setting implements
         return $this;
     }
 
-    /**
-     * Determine whether key exists
-     */
     public function exists(
         string $key
     ): bool {
-        $this->ensureLoaded();
-
-        return array_key_exists(
-            $key,
-            $this->settings
-        );
+        return $this->get($key, '__missing__') !== '__missing__';
     }
 
-    /**
-     * Determine whether setting matches value
-     */
     public function has(
         string $key,
         mixed $value
@@ -327,9 +222,6 @@ final class Setting implements
             : $current === $value;
     }
 
-    /**
-     * Clear settings
-     */
     public function clear(): self
     {
         $this->assertMutable();
@@ -339,9 +231,6 @@ final class Setting implements
         return $this;
     }
 
-    /**
-     * Export all settings
-     */
     public function all(): array
     {
         $this->ensureLoaded();
@@ -349,87 +238,95 @@ final class Setting implements
         return $this->settings;
     }
 
-    /**
-     * Export JSON
-     */
     public function toJson(
-        int $flags = JSON_PRETTY_PRINT
+        int $flags = JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES
     ): string {
-        return json_encode(
-            $this->settings,
-            $flags
-        ) ?: '{}';
+        try {
+            return json_encode(
+                $this->all(),
+                JSON_THROW_ON_ERROR | $flags
+            );
+        } catch (JsonException) {
+            return '{}';
+        }
     }
 
-    /**
-     * Count settings
-     */
     public function count(): int
     {
+        $this->ensureLoaded();
+
         return count($this->settings);
     }
 
-    /**
-     * IteratorAggregate implementation
-     */
     public function getIterator(): Traversable
     {
-        return new ArrayIterator(
-            $this->settings
-        );
+        $this->ensureLoaded();
+
+        return new ArrayIterator($this->settings);
     }
 
-    /**
-     * JsonSerializable implementation
-     */
     public function jsonSerialize(): array
     {
-        return $this->settings;
+        return $this->all();
     }
 
-    /**
-     * ArrayAccess exists
-     */
     public function offsetExists(
         mixed $offset
     ): bool {
-        return $this->exists(
-            (string) $offset
-        );
+        return $this->exists((string) $offset);
     }
 
-    /**
-     * ArrayAccess get
-     */
     public function offsetGet(
         mixed $offset
     ): mixed {
-        return $this->get(
-            (string) $offset
-        );
+        return $this->get((string) $offset);
     }
 
-    /**
-     * ArrayAccess set
-     */
     public function offsetSet(
         mixed $offset,
         mixed $value
     ): void {
-        $this->set(
-            (string) $offset,
-            $value
-        );
+        $this->set((string) $offset, $value);
     }
 
-    /**
-     * ArrayAccess unset
-     */
     public function offsetUnset(
         mixed $offset
     ): void {
-        $this->remove(
-            (string) $offset
+        $this->remove((string) $offset);
+    }
+
+    private function ensureLoaded(): void
+    {
+        if (!$this->loaded) {
+            $this->load();
+        }
+    }
+
+    private function assertMutable(): void
+    {
+        if ($this->locked) {
+            throw new RuntimeException(
+                'Settings are locked and cannot be modified.'
+            );
+        }
+    }
+
+    private function transformValue(
+        mixed $value,
+        bool $isArray
+    ): mixed {
+        if (!$isArray) {
+            return $value;
+        }
+
+        return array_values(
+            array_filter(
+                array_map(
+                    static fn (string $item): string => trim($item),
+                    explode(',', (string) $value)
+                ),
+                static fn (string $item): bool => $item !== ''
+            )
         );
     }
 }
