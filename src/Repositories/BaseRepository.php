@@ -4,20 +4,34 @@ declare(strict_types=1);
 
 namespace PHPageBuilder\Repositories;
 
-use PHPageBuilder\Core\DB;
 use InvalidArgumentException;
+use PHPageBuilder\Core\DB;
 
 abstract class BaseRepository
 {
-    protected DB $db;
+    protected readonly DB $db;
+
+    /**
+     * Table name without prefix.
+     */
     protected string $table;
+
+    /**
+     * Hydration class.
+     */
     protected ?string $class = null;
 
     /**
-     * Optionally define allowed columns to prevent SQL injection
+     * Whitelisted columns.
+     *
      * @var string[]
      */
     protected array $allowedColumns = [];
+
+    /**
+     * Full table name with prefix.
+     */
+    protected string $tableName;
 
     public function __construct(?DB $db = null)
     {
@@ -25,69 +39,89 @@ abstract class BaseRepository
 
         $this->db = $db ?? $phpb_db;
 
-        if (empty($this->table)) {
-            throw new InvalidArgumentException('Table name must be defined in repository.');
+        if ($this->table === '') {
+            throw new InvalidArgumentException(
+                'Repository table name must be defined.'
+            );
         }
 
-        $this->table = phpb_config('storage.database.prefix') . $this->sanitize($this->table);
+        $this->tableName = phpb_config('storage.database.prefix')
+            . $this->sanitizeIdentifier($this->table);
     }
 
-    /* ---------------------------------
+    /* -----------------------------------------------------------------
      | CRUD
-     |---------------------------------*/
+     * -----------------------------------------------------------------*/
 
     protected function create(array $data): ?object
     {
         $data = $this->filterColumns($data);
 
-        if (empty($data)) {
-            throw new InvalidArgumentException('No valid data provided for insert.');
+        if ($data === []) {
+            throw new InvalidArgumentException(
+                'No valid data provided for insert.'
+            );
         }
 
         $columns = array_keys($data);
-        $placeholders = array_fill(0, count($data), '?');
 
         $sql = sprintf(
-            "INSERT INTO %s (%s) VALUES (%s)",
-            $this->table,
-            implode(', ', $columns),
-            implode(', ', $placeholders)
+            'INSERT INTO `%s` (%s) VALUES (%s)',
+            $this->tableName,
+            implode(', ', array_map(
+                fn(string $col) => "`{$col}`",
+                $columns
+            )),
+            implode(', ', array_fill(0, count($columns), '?'))
         );
 
         $this->db->query($sql, array_values($data));
 
         $id = $this->db->lastInsertId();
 
-        return $id ? $this->findById((int)$id) : null;
+        return $id !== null
+            ? $this->findById((int) $id)
+            : null;
     }
 
     protected function update(object $instance, array $data): bool
     {
         $data = $this->filterColumns($data);
 
-        if (empty($data)) {
+        if ($data === []) {
             return false;
         }
 
-        $id = $this->extractId($instance);
+        $setClause = implode(
+            ', ',
+            array_map(
+                fn(string $column) => "`{$column}` = ?",
+                array_keys($data)
+            )
+        );
 
-        $set = implode(', ', array_map(
-            fn($col) => "{$col} = ?",
-            array_keys($data)
-        ));
+        $sql = sprintf(
+            'UPDATE `%s` SET %s WHERE `id` = ?',
+            $this->tableName,
+            $setClause
+        );
 
-        $sql = "UPDATE {$this->table} SET {$set} WHERE id = ?";
-
-        return $this->db->query($sql, [
-            ...array_values($data),
-            $id
-        ]);
+        return $this->db->query(
+            $sql,
+            [
+                ...array_values($data),
+                $this->extractId($instance),
+            ]
+        );
     }
 
     public function delete(int|string $id): bool
     {
         return $this->db->query(
-            "DELETE FROM {$this->table} WHERE id = ?",
+            sprintf(
+                'DELETE FROM `%s` WHERE `id` = ?',
+                $this->tableName
+            ),
             [$id]
         );
     }
@@ -97,33 +131,43 @@ abstract class BaseRepository
         $column = $this->validateColumn($column);
 
         return $this->db->query(
-            "DELETE FROM {$this->table} WHERE {$column} = ?",
+            sprintf(
+                'DELETE FROM `%s` WHERE `%s` = ?',
+                $this->tableName,
+                $column
+            ),
             [$value]
         );
     }
 
     public function deleteAll(): bool
     {
-        return $this->db->query("DELETE FROM {$this->table}");
+        return $this->db->query(
+            sprintf('DELETE FROM `%s`', $this->tableName)
+        );
     }
 
-    /* ---------------------------------
+    /* -----------------------------------------------------------------
      | Queries
-     |---------------------------------*/
+     * -----------------------------------------------------------------*/
 
     public function getAll(array|string $columns = '*'): array
     {
-        $columns = $this->prepareColumns($columns);
-
         return $this->hydrateMany(
-            $this->db->all($this->table, $columns)
+            $this->db->all(
+                $this->tableName,
+                $this->prepareColumns($columns)
+            )
         );
     }
 
     public function findById(int|string $id): ?object
     {
         return $this->hydrateOne(
-            $this->db->findWithId($this->table, $id)
+            $this->db->findWithId(
+                $this->tableName,
+                $id
+            )
         );
     }
 
@@ -131,64 +175,92 @@ abstract class BaseRepository
     {
         $column = $this->validateColumn($column);
 
-        $records = $this->db->select(
-            "SELECT * FROM {$this->table} WHERE {$column} = ?",
-            [$value]
+        return $this->hydrateMany(
+            $this->db->select(
+                sprintf(
+                    'SELECT * FROM `%s` WHERE `%s` = ?',
+                    $this->tableName,
+                    $column
+                ),
+                [$value]
+            )
         );
-
-        return $this->hydrateMany($records);
     }
 
-    /* ---------------------------------
+    public function firstWhere(string $column, mixed $value): ?object
+    {
+        return $this->findWhere($column, $value)[0] ?? null;
+    }
+
+    public function exists(string $column, mixed $value): bool
+    {
+        return $this->firstWhere($column, $value) !== null;
+    }
+
+    public function count(): int
+    {
+        $result = $this->db->select(
+            sprintf(
+                'SELECT COUNT(*) AS total FROM `%s`',
+                $this->tableName
+            )
+        );
+
+        return (int) ($result[0]['total'] ?? 0);
+    }
+
+    /* -----------------------------------------------------------------
      | Hydration
-     |---------------------------------*/
+     * -----------------------------------------------------------------*/
 
     protected function hydrateOne(array $records): ?object
     {
-        $items = $this->hydrateMany($records);
-        return $items[0] ?? null;
+        return $this->hydrateMany($records)[0] ?? null;
     }
 
     protected function hydrateMany(array $records): array
     {
-        if (!$this->class) {
+        if ($this->class === null) {
             return $records;
         }
 
-        return array_map(fn($record) => $this->hydrate($record), $records);
+        return array_map(
+            fn(array $record) => $this->hydrate($record),
+            $records
+        );
     }
 
     protected function hydrate(array $record): object
     {
-        $instance = new $this->class();
+        $instance = new ($this->class)();
 
         if (method_exists($instance, 'setData')) {
             $instance->setData($record);
             return $instance;
         }
 
-        foreach ($record as $key => $value) {
-            $instance->{$key} = $value;
+        foreach ($record as $property => $value) {
+            if (property_exists($instance, $property)) {
+                $instance->{$property} = $value;
+            }
         }
 
         return $instance;
     }
 
-    /* ---------------------------------
+    /* -----------------------------------------------------------------
      | Helpers
-     |---------------------------------*/
+     * -----------------------------------------------------------------*/
 
     protected function extractId(object $instance): int|string
     {
-        if (isset($instance->id)) {
-            return $instance->id;
-        }
-
-        if (method_exists($instance, 'getId')) {
-            return $instance->getId();
-        }
-
-        throw new InvalidArgumentException('Instance has no identifiable ID.');
+        return match (true) {
+            property_exists($instance, 'id') => $instance->id,
+            method_exists($instance, 'getId') => $instance->getId(),
+            default => throw new InvalidArgumentException(
+                'Unable to determine entity ID.'
+            ),
+        };
     }
 
     protected function prepareColumns(array|string $columns): array|string
@@ -197,42 +269,44 @@ abstract class BaseRepository
             return '*';
         }
 
-        return array_map(fn($col) => $this->validateColumn($col), $columns);
+        return array_map(
+            fn(string $column) => $this->validateColumn($column),
+            $columns
+        );
     }
 
     protected function filterColumns(array $data): array
     {
-        $filtered = [];
-
-        foreach ($data as $column => $value) {
-            if ($this->isAllowedColumn($column)) {
-                $filtered[$this->sanitize($column)] = $value;
-            }
-        }
-
-        return $filtered;
+        return array_filter(
+            $data,
+            fn(string $column) => $this->isAllowedColumn($column),
+            ARRAY_FILTER_USE_KEY
+        );
     }
 
     protected function validateColumn(string $column): string
     {
         if (!$this->isAllowedColumn($column)) {
-            throw new InvalidArgumentException("Column '{$column}' is not allowed.");
+            throw new InvalidArgumentException(
+                "Column '{$column}' is not allowed."
+            );
         }
 
-        return $this->sanitize($column);
+        return $this->sanitizeIdentifier($column);
     }
 
     protected function isAllowedColumn(string $column): bool
     {
-        if (empty($this->allowedColumns)) {
-            return true; // fallback (less secure, but flexible)
-        }
-
-        return in_array($column, $this->allowedColumns, true);
+        return $this->allowedColumns === []
+            || in_array($column, $this->allowedColumns, true);
     }
 
-    protected function sanitize(string $value): string
+    protected function sanitizeIdentifier(string $identifier): string
     {
-        return preg_replace('/[^a-zA-Z0-9_]/', '', $value);
+        return preg_replace(
+            '/[^a-zA-Z0-9_]/',
+            '',
+            $identifier
+        );
     }
 }
