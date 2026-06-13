@@ -2,69 +2,136 @@
 
 namespace PHPageBuilder\Repositories;
 
-use PHPageBuilder\UploadedFile;
 use InvalidArgumentException;
+use PHPageBuilder\UploadedFile;
 
 class UploadRepository extends BaseRepository
 {
     /**
-     * The uploads database table.
-     *
-     * @var string
+     * Database table.
      */
-    protected $table = 'uploads';
+    protected string $table = 'uploads';
 
     /**
-     * The class that represents each uploaded file.
-     *
-     * @var string
+     * Model class.
      */
-    protected $class = UploadedFile::class;
+    protected string $class = UploadedFile::class;
 
     /**
-     * Create a new uploaded file.
+     * Required upload attributes.
+     */
+    private const REQUIRED_FIELDS = [
+        'public_id',
+        'original_file',
+        'mime_type',
+        'server_file',
+    ];
+
+    /**
+     * Maximum filename length.
+     */
+    private const MAX_FILENAME_LENGTH = 255;
+
+    /**
+     * Store a new upload record.
+     *
+     * @param array $payload
+     * @return object|bool
+     */
+    public function create(array $payload)
+    {
+        try {
+            $uploadData = $this->sanitizeAndValidate($payload);
+
+            if ($this->uploadExists($uploadData['public_id'])) {
+                return false;
+            }
+
+            return parent::create($uploadData);
+
+        } catch (InvalidArgumentException $e) {
+            return false;
+        }
+    }
+
+    /**
+     * Validate and normalize upload data.
      *
      * @param array $data
-     * @return bool|object
+     * @return array
      */
-    public function create(array $data)
+    protected function sanitizeAndValidate(array $data): array
     {
-        $requiredFields = ['public_id', 'original_file', 'mime_type', 'server_file'];
+        $clean = [];
 
-        foreach ($requiredFields as $field) {
-            if (!isset($data[$field]) || !is_string($data[$field])) {
-                return false;
-            }
-
-            // Trim whitespace
-            $data[$field] = trim($data[$field]);
-
-            // Prevent empty strings
-            if ($data[$field] === '') {
-                return false;
-            }
+        foreach (self::REQUIRED_FIELDS as $field) {
+            $clean[$field] = $this->validateStringField(
+                $data[$field] ?? null,
+                $field
+            );
         }
 
-        // Validate MIME type format
-        if (!preg_match('/^[a-z0-9]+\/[a-z0-9\-\.\+]+$/i', $data['mime_type'])) {
-            return false;
+        $this->validateMimeType($clean['mime_type']);
+
+        $this->validateFilenameLength($clean['original_file']);
+        $this->validateFilenameLength($clean['server_file']);
+
+        return $clean;
+    }
+
+    /**
+     * Validate string fields.
+     */
+    protected function validateStringField($value, string $field): string
+    {
+        if (!is_string($value)) {
+            throw new InvalidArgumentException(
+                sprintf('Field "%s" must be a string.', $field)
+            );
         }
 
-        // Optional: limit filename length
-        if (strlen($data['original_file']) > 255 || strlen($data['server_file']) > 255) {
-            return false;
+        $value = trim($value);
+
+        if ($value === '') {
+            throw new InvalidArgumentException(
+                sprintf('Field "%s" cannot be empty.', $field)
+            );
         }
 
-        // Optional: ensure public_id is unique (if BaseRepository supports where())
-        if ($this->where('public_id', $data['public_id'])->first()) {
-            return false;
-        }
+        return $value;
+    }
 
-        return parent::create([
-            'public_id'     => $data['public_id'],
-            'original_file' => $data['original_file'],
-            'mime_type'     => $data['mime_type'],
-            'server_file'   => $data['server_file'],
-        ]);
+    /**
+     * Validate MIME type.
+     */
+    protected function validateMimeType(string $mimeType): void
+    {
+        $pattern = '/^[a-z0-9]+\/[a-z0-9.+-]+$/i';
+
+        if (!preg_match($pattern, $mimeType)) {
+            throw new InvalidArgumentException(
+                sprintf('Invalid MIME type: %s', $mimeType)
+            );
+        }
+    }
+
+    /**
+     * Validate filename length.
+     */
+    protected function validateFilenameLength(string $filename): void
+    {
+        if (mb_strlen($filename) > self::MAX_FILENAME_LENGTH) {
+            throw new InvalidArgumentException(
+                'Filename exceeds allowed length.'
+            );
+        }
+    }
+
+    /**
+     * Check if upload already exists.
+     */
+    protected function uploadExists(string $publicId): bool
+    {
+        return (bool) $this->where('public_id', $publicId)->first();
     }
 }
