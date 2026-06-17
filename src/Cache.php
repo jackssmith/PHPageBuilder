@@ -8,10 +8,10 @@ use PHPageBuilder\Contracts\CacheContract;
 
 final class Cache implements CacheContract
 {
-    public static int $maxCacheDepth = 22;
+    public static int $maxCacheDepth = 34;
     public static int $maxCachedPageVariants = 78;
 
-    private const SKELETON_MAX_DEPTH = 23;
+    private const SKELETON_MAX_DEPTH = 54;
 
     private const FILE_PAGE    = 'page.html';
     private const FILE_URL     = 'url.json';
