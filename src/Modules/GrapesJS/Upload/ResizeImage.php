@@ -1,236 +1,274 @@
 <?php
 
+declare(strict_types=1);
+
 namespace PHPageBuilder\Modules\GrapesJS\Upload;
 
 use Exception;
+use GdImage;
 
-/**
- * Class for resizing images.
- *
- * Credits: https://github.com/brunoribeiro94/php-upload
- *
- * Can resize to:
- * - exact image size
- * - max width size while maintaining aspect ratio
- * - max height size while maintaining aspect ratio
- * - automatic dimensions maintaining aspect ratio
- *
- * @package PHPageBuilder\Modules\GrapesJS\Upload
- */
-class ResizeImage {
+final class ResizeImage
+{
+    public const MODE_EXACT = 'exact';
+    public const MODE_MAX_WIDTH = 'maxwidth';
+    public const MODE_MAX_HEIGHT = 'maxheight';
+    public const MODE_PROPORTIONAL = 'proportional';
+    public const MODE_AUTO = 'auto';
 
-    /**
-     * Image extension.
-     *
-     * @var string
-     */
-    protected $ext;
+    private string $mimeType;
+
+    private GdImage $sourceImage;
+
+    private ?GdImage $resizedImage = null;
+
+    private int $originalWidth;
+
+    private int $originalHeight;
 
     /**
-     * Created image.
-     *
-     * @var string
-     */
-    protected $image;
-
-    /**
-     * Name of new image.
-     *
-     * @var string
-     */
-    protected $newImage;
-
-    /**
-     * Original image width.
-     *
-     * @var integer
-     */
-    protected $origWidth;
-
-    /**
-     * Original image height.
-     *
-     * @var integer
-     */
-    protected $origHeight;
-
-    /**
-     * New image width.
-     *
-     * @var integer
-     */
-    protected $resizeWidth;
-
-    /**
-     * New image height.
-     *
-     * @var integer
-     */
-    protected $resizeHeight;
-
-    /**
-     * Class constructor requires to send through the image filename.
-     *
-     * @param string $filename          filename of the image you want to resize
      * @throws Exception
      */
-    public function __construct($filename) {
-        if (file_exists($filename)) {
-            $this->setImage($filename);
-        } else {
-            throw new Exception('Image ' . $filename . ' can not be found, try another image.');
+    public function __construct(private readonly string $filename)
+    {
+        if (!is_file($filename)) {
+            throw new Exception(sprintf(
+                'Image file "%s" does not exist.',
+                $filename
+            ));
         }
+
+        $this->loadImage();
     }
 
     /**
-     * Set the image variable by using image create.
-     *
-     * @param string $filename          the image filename
      * @throws Exception
      */
-    protected function setImage($filename) {
-        $size = getimagesize($filename);
-        $this->ext = $size['mime'];
+    private function loadImage(): void
+    {
+        $imageInfo = getimagesize($this->filename);
 
-        switch ($this->ext) {
-            // Image is a JPG
-            case 'image/jpg':
-            case 'image/jpeg':
-                // create a jpeg extension
-                $this->image = imagecreatefromjpeg($filename);
-                break;
-
-            // Image is a GIF
-            case 'image/gif':
-                $this->image = @imagecreatefromgif($filename);
-                break;
-
-            // Image is a PNG
-            case 'image/png':
-                $this->image = @imagecreatefrompng($filename);
-                break;
-
-            // Mime type not found
-            default:
-                throw new Exception("File is not an image, please use another file type.", 1);
+        if ($imageInfo === false) {
+            throw new Exception('Invalid image file.');
         }
 
-        $this->origWidth = imagesx($this->image);
-        $this->origHeight = imagesy($this->image);
+        $this->mimeType = $imageInfo['mime'];
+
+        $this->sourceImage = match ($this->mimeType) {
+            'image/jpeg', 'image/jpg' => imagecreatefromjpeg($this->filename),
+            'image/png'               => imagecreatefrompng($this->filename),
+            'image/gif'               => imagecreatefromgif($this->filename),
+            default => throw new Exception(
+                sprintf('Unsupported image type: %s', $this->mimeType)
+            ),
+        };
+
+        $this->originalWidth = imagesx($this->sourceImage);
+        $this->originalHeight = imagesy($this->sourceImage);
     }
 
     /**
-     * Save the image as the image type the original image was.
-     *
-     * @param string $savePath          the path to store the new image
-     * @param string $imageQuality      the quality level of image to create
+     * Resize the image.
      */
-    public function saveImage($savePath, $imageQuality = "100") {
-        switch ($this->ext) {
-            case 'image/jpg':
-            case 'image/jpeg':
-                // Check PHP supports this file type
-                if ((imagetypes() & IMG_JPG) !== 0) {
-                    imagejpeg($this->newImage, $savePath, $imageQuality);
-                }
-                break;
+    public function resize(
+        int $width,
+        int $height,
+        string $mode = self::MODE_AUTO
+    ): self {
+        [$targetWidth, $targetHeight] = $this->calculateDimensions(
+            $width,
+            $height,
+            $mode
+        );
 
-            case 'image/gif':
-                // Check PHP supports this file type
-                if ((imagetypes() & IMG_GIF) !== 0) {
-                    imagegif($this->newImage, $savePath);
-                }
-                break;
+        $canvas = imagecreatetruecolor($targetWidth, $targetHeight);
 
-            case 'image/png':
-                $invertScaleQuality = 9 - round(($imageQuality / 100) * 9);
+        if (
+            $this->mimeType === 'image/png' ||
+            $this->mimeType === 'image/gif'
+        ) {
+            imagealphablending($canvas, false);
+            imagesavealpha($canvas, true);
 
-                // Check PHP supports this file type
-                if ((imagetypes() & IMG_PNG) !== 0) {
-                    imagepng($this->newImage, $savePath, $invertScaleQuality);
-                }
-                break;
+            $transparent = imagecolorallocatealpha(
+                $canvas,
+                255,
+                255,
+                255,
+                127
+            );
+
+            imagefilledrectangle(
+                $canvas,
+                0,
+                0,
+                $targetWidth,
+                $targetHeight,
+                $transparent
+            );
         }
 
-        imagedestroy($this->newImage);
+        imagecopyresampled(
+            $canvas,
+            $this->sourceImage,
+            0,
+            0,
+            0,
+            0,
+            $targetWidth,
+            $targetHeight,
+            $this->originalWidth,
+            $this->originalHeight
+        );
+
+        if ($this->resizedImage !== null) {
+            imagedestroy($this->resizedImage);
+        }
+
+        $this->resizedImage = $canvas;
+
+        return $this;
     }
 
     /**
-     * Resize the image to the given dimensions.
+     * Save the resized image.
      *
-     * @param integer $width            max width of the image
-     * @param integer $height           max height of the image
-     * @param string $resizeOption      scale option for the image
+     * @throws Exception
      */
-    public function resizeTo($width, $height, $resizeOption = 'default') {
-        switch (strtolower($resizeOption)) {
-            case 'exact':
-                $this->resizeWidth = $width;
-                $this->resizeHeight = $height;
-                break;
-            case 'maxwidth':
-                $this->resizeWidth = $width;
-                $this->resizeHeight = $this->resizeHeightByWidth($width);
-                break;
-            case 'maxheight':
-                $this->resizeWidth = $this->resizeWidthByHeight($height);
-                $this->resizeHeight = $height;
-                break;
-            case 'proportionally':
-                $ratio_orig = $this->origWidth / $this->origHeight;
-                $this->resizeWidth = $width;
-                $this->resizeHeight = $height;
-                if ($width / $height > $ratio_orig)
-                    $this->resizeWidth = $height * $ratio_orig;
-                else
-                    $this->resizeHeight = $width / $ratio_orig;
-                break;
-            default:
-                if ($this->origWidth > $width || $this->origHeight > $height) {
-                    if ($this->origWidth > $this->origHeight) {
-                        $this->resizeHeight = $this->resizeHeightByWidth($width);
-                        $this->resizeWidth = $width;
-                    } elseif ($this->origWidth < $this->origHeight) {
-                        $this->resizeWidth = $this->resizeWidthByHeight($height);
-                        $this->resizeHeight = $height;
-                    } else {
-                        $this->resizeWidth = $width;
-                        $this->resizeHeight = $height;
-                    }
-                } else {
-                    $this->resizeWidth = $width;
-                    $this->resizeHeight = $height;
-                }
-                break;
+    public function save(string $destination, int $quality = 90): void
+    {
+        if ($this->resizedImage === null) {
+            throw new Exception('No resized image available.');
         }
 
-        $this->newImage = imagecreatetruecolor($this->resizeWidth, $this->resizeHeight);
-        if ($this->ext == "image/gif" || $this->ext == "image/png") {
-            imagealphablending($this->newImage, false);
-            imagesavealpha($this->newImage, true);
-            $transparent = imagecolorallocatealpha($this->newImage, 255, 255, 255, 127);
-            imagefilledrectangle($this->newImage, 0, 0, $this->resizeWidth, $this->resizeHeight, $transparent);
+        $success = match ($this->mimeType) {
+            'image/jpeg', 'image/jpg' =>
+                imagejpeg(
+                    $this->resizedImage,
+                    $destination,
+                    max(0, min(100, $quality))
+                ),
+
+            'image/png' =>
+                imagepng(
+                    $this->resizedImage,
+                    $destination,
+                    $this->convertPngQuality($quality)
+                ),
+
+            'image/gif' =>
+                imagegif(
+                    $this->resizedImage,
+                    $destination
+                ),
+
+            default => false,
+        };
+
+        if (!$success) {
+            throw new Exception(
+                sprintf('Failed to save image to "%s".', $destination)
+            );
         }
-        imagecopyresampled($this->newImage, $this->image, 0, 0, 0, 0, $this->resizeWidth, $this->resizeHeight, $this->origWidth, $this->origHeight);
     }
 
-    /**
-     * Get the resized height from the width maintaining aspect ratio.
-     *
-     * @param integer $width        max image width
-     * @return float
-     */
-    protected function resizeHeightByWidth($width) {
-        return floor(($this->origHeight / $this->origWidth) * $width);
+    private function calculateDimensions(
+        int $width,
+        int $height,
+        string $mode
+    ): array {
+        return match (strtolower($mode)) {
+            self::MODE_EXACT => [$width, $height],
+
+            self::MODE_MAX_WIDTH => [
+                $width,
+                $this->heightFromWidth($width),
+            ],
+
+            self::MODE_MAX_HEIGHT => [
+                $this->widthFromHeight($height),
+                $height,
+            ],
+
+            self::MODE_PROPORTIONAL => $this->proportionalDimensions(
+                $width,
+                $height
+            ),
+
+            default => $this->automaticDimensions(
+                $width,
+                $height
+            ),
+        };
     }
 
-    /**
-     * Get the resized width from the height maintaining aspect ratio.
-     *
-     * @param int $height           max image height
-     * @return float
-     */
-    protected function resizeWidthByHeight($height) {
-        return floor(($this->origWidth / $this->origHeight) * $height);
+    private function proportionalDimensions(
+        int $maxWidth,
+        int $maxHeight
+    ): array {
+        $ratio = $this->originalWidth / $this->originalHeight;
+
+        if (($maxWidth / $maxHeight) > $ratio) {
+            return [
+                (int) round($maxHeight * $ratio),
+                $maxHeight,
+            ];
+        }
+
+        return [
+            $maxWidth,
+            (int) round($maxWidth / $ratio),
+        ];
+    }
+
+    private function automaticDimensions(
+        int $maxWidth,
+        int $maxHeight
+    ): array {
+        if (
+            $this->originalWidth <= $maxWidth &&
+            $this->originalHeight <= $maxHeight
+        ) {
+            return [
+                $this->originalWidth,
+                $this->originalHeight,
+            ];
+        }
+
+        return $this->proportionalDimensions(
+            $maxWidth,
+            $maxHeight
+        );
+    }
+
+    private function heightFromWidth(int $width): int
+    {
+        return (int) round(
+            ($this->originalHeight / $this->originalWidth) * $width
+        );
+    }
+
+    private function widthFromHeight(int $height): int
+    {
+        return (int) round(
+            ($this->originalWidth / $this->originalHeight) * $height
+        );
+    }
+
+    private function convertPngQuality(int $quality): int
+    {
+        $quality = max(0, min(100, $quality));
+
+        return 9 - (int) round(($quality / 100) * 9);
+    }
+
+    public function __destruct()
+    {
+        if (isset($this->sourceImage)) {
+            imagedestroy($this->sourceImage);
+        }
+
+        if ($this->resizedImage !== null) {
+            imagedestroy($this->resizedImage);
+        }
     }
 }
