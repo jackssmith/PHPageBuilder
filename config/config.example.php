@@ -1,33 +1,37 @@
 <?php
 
 return [
+
     /*
      |--------------------------------------------------------------------------
-     | General settings
+     | General Settings
      |--------------------------------------------------------------------------
      |
-     | General settings for configuring the PageBuilder.
-     | If you install phpb with Composer, general.assets_url line must be:
-     | 'assets_url' => '/vendor/hansschouten/phpagebuilder/dist',
+     | Configure the core PageBuilder options.
+     |
+     | If PHPageBuilder is installed via Composer, set the assets URL to:
+     |
+     |     /vendor/hansschouten/phpagebuilder/dist
      |
      */
     'general' => [
-        'base_url' => 'http://localhost',
-        'language' => 'en',
-        'assets_url' => '/assets',
-        'uploads_url' => '/uploads'
+        'base_url'    => 'http://localhost',
+        'language'    => 'en',
+        'assets_url'  => '/assets',
+        'uploads_url' => '/uploads',
     ],
 
     /*
      |--------------------------------------------------------------------------
-     | Storage settings
+     | Storage Settings
      |--------------------------------------------------------------------------
      |
-     | Database and file storage settings.
+     | Configure database connectivity and file storage locations.
      |
      */
     'storage' => [
         'use_database' => true,
+
         'database' => [
             'driver'    => 'mysql',
             'host'      => 'localhost',
@@ -38,143 +42,161 @@ return [
             'collation' => 'utf8_unicode_ci',
             'prefix'    => '',
         ],
-        'uploads_folder' => __DIR__ . '/uploads'
+
+        'uploads_folder' => __DIR__ . '/uploads',
     ],
 
     /*
      |--------------------------------------------------------------------------
-     | Auth settings
+     | Authentication Settings
      |--------------------------------------------------------------------------
      |
-     | By default an authentication class is provided which checks for the
-     | credentials configured in this setting block.
+     | Configure authentication for the PageBuilder administration panel.
+     | The default authentication class validates the credentials defined
+     | below. Replace the authentication class to integrate with your own
+     | authentication system.
      |
      */
     'auth' => [
         'use_login' => true,
-        'class' => PHPageBuilder\Modules\Auth\Auth::class,
-        'url' => '/admin/auth',
-        'username' => 'admin',
-        'password' => 'changethispassword'
+        'class'     => PHPageBuilder\Modules\Auth\Auth::class,
+        'url'       => '/admin/auth',
+        'username'  => 'admin',
+        'password'  => 'changethispassword',
     ],
 
     /*
      |--------------------------------------------------------------------------
-     | WebsiteManager settings
+     | Website Manager Settings
      |--------------------------------------------------------------------------
      |
-     | By default a basic WebsiteManager is provided for creating/editing pages.
+     | Configure the built-in Website Manager used to create, edit, and
+     | organize website pages.
      |
      */
     'website_manager' => [
         'use_website_manager' => true,
-        'class' => PHPageBuilder\Modules\WebsiteManager\WebsiteManager::class,
-        'url' => '/admin'
+        'class'               => PHPageBuilder\Modules\WebsiteManager\WebsiteManager::class,
+        'url'                 => '/admin',
     ],
 
     /*
      |--------------------------------------------------------------------------
-     | Website settings
+     | Website Settings Provider
      |--------------------------------------------------------------------------
      |
-     | By default a setting class is provided for accessing website settings.
+     | Defines the class responsible for storing and retrieving website-wide
+     | configuration values.
      |
      */
     'setting' => [
-        'class' => PHPageBuilder\Setting::class
+        'class' => PHPageBuilder\Setting::class,
     ],
 
     /*
      |--------------------------------------------------------------------------
-     | PageBuilder settings
+     | PageBuilder Settings
      |--------------------------------------------------------------------------
      |
-     | By default a PageBuilder is provided based on GrapesJS.
+     | Configure the visual page editor. The default implementation is based
+     | on GrapesJS.
      |
      */
     'pagebuilder' => [
         'class' => PHPageBuilder\Modules\GrapesJS\PageBuilder::class,
-        'url' => '/admin/pagebuilder',
+        'url'   => '/admin/pagebuilder',
+
         'actions' => [
-            'back' => '/admin'
-        ]
+            'back' => '/admin',
+        ],
     ],
 
     /*
      |--------------------------------------------------------------------------
-     | Page settings
+     | Page Model Settings
      |--------------------------------------------------------------------------
      |
-     | By default a Page class is provided with knowledge about its layout and URL.
+     | Configure the page model, database tables, and translation model used
+     | for multilingual content.
      |
      */
     'page' => [
         'class' => PHPageBuilder\Page::class,
         'table' => 'pages',
+
         'translation' => [
-            'class' => PHPageBuilder\PageTranslation::class,
-            'table' => 'page_translations',
+            'class'       => PHPageBuilder\PageTranslation::class,
+            'table'       => 'page_translations',
             'foreign_key' => 'page_id',
-        ]
+        ],
     ],
 
     /*
      |--------------------------------------------------------------------------
-     | Cache settings
+     | Cache Settings
      |--------------------------------------------------------------------------
      |
-     | Faster load time by skipping block parsing if the page has been requested before.
-     | A page will be cached, except if it contains a block with caching set to false.
-     | This can be used to prevent caching pages with content that varies per page load.
-     | The cached html is removed if the page is saved again in the page builder.
+     | Enable page caching to improve performance by skipping block parsing
+     | for previously generated pages.
+     |
+     | Pages containing blocks with caching disabled will never be cached.
+     | Cached pages are automatically invalidated whenever they are updated
+     | in the PageBuilder.
      |
      */
     'cache' => [
         'enabled' => false,
-        'folder' => __DIR__ . '/cache',
-        'class' => PHPageBuilder\Cache::class
+        'folder'  => __DIR__ . '/cache',
+        'class'   => PHPageBuilder\Cache::class,
     ],
 
     /*
      |--------------------------------------------------------------------------
-     | Theme settings
+     | Theme Settings
      |--------------------------------------------------------------------------
      |
-     | PageBuilder requires a themes folder in which for each theme the individual
-     | theme blocks are defined. A theme block is a sub folder in the themes folder
-     | containing a view, model (optional) and controller (optional).
+     | Configure the active theme and the location of theme resources.
+     |
+     | Each theme resides in its own directory and may contain blocks,
+     | views, controllers, and optional models.
      |
      */
     'theme' => [
-        'class' => PHPageBuilder\Theme::class,
-        'folder' => __DIR__ . '/themes',
-        'folder_url' => '/themes',
-        'active_theme' => 'demo'
+        'class'        => PHPageBuilder\Theme::class,
+        'folder'       => __DIR__ . '/themes',
+        'folder_url'   => '/themes',
+        'active_theme' => 'demo',
     ],
 
     /*
      |--------------------------------------------------------------------------
-     | Routing settings
+     | Routing Settings
      |--------------------------------------------------------------------------
      |
-     | Settings for resolving pages based on the current URI.
+     | Defines how incoming requests are resolved to website pages.
      |
      */
     'router' => [
-        'class' => PHPageBuilder\Modules\Router\DatabasePageRouter::class
+        'class' => PHPageBuilder\Modules\Router\DatabasePageRouter::class,
     ],
 
     /*
      |--------------------------------------------------------------------------
-     | Class replacements
+     | Class Replacements
      |--------------------------------------------------------------------------
      |
-     | Allows mapping a class namespace to an alternative namespace,
-     | useful for replacing implementations of specific pagebuilder classes.
-     | Example: PHPageBuilder\UploadedFile::class => Alternative\UploadedFile::class
-     | Important: when overriding a class always extend the original class.
+     | Replace built-in classes with custom implementations.
+     |
+     | The key is the original class, and the value is the replacement class.
+     | Custom classes should extend the original implementation to maintain
+     | compatibility.
+     |
+     | Example:
+     |
+     | PHPageBuilder\UploadedFile::class => App\PageBuilder\UploadedFile::class
      |
      */
     'class_replacements' => [
     ],
+
 ];
