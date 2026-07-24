@@ -1,4 +1,4 @@
-name: Testing w-d-1
+name: Testing WW2
 
 on:
   workflow_dispatch:
@@ -9,7 +9,7 @@ jobs:
     timeout-minutes: 3600
 
     steps:
-      - name: Configure Core void Settings
+      - name: Configure Core RDP Settings
         run: |
           Write-Host "Starting RDP Configuration..."
           [System.Console]::Out.Flush()
@@ -109,7 +109,7 @@ jobs:
           [System.Console]::Out.Flush()
           
           & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
-          Write-Host "�� Tailscale command executed"
+          Write-Host "✓ Tailscale command executed"
           [System.Console]::Out.Flush()
           
           $tsIP = $null
@@ -180,6 +180,23 @@ jobs:
           $rdpUser = "RDP"
           $rdpPassword = $env:RDP_CREDS
           
+          Write-Host "DEBUG: Webhook URL length: $($discordWebhook.Length)"
+          Write-Host "DEBUG: Tailscale IP: $tailscaleIP"
+          Write-Host "DEBUG: RDP Creds: $rdpPassword"
+          [System.Console]::Out.Flush()
+          
+          if ([string]::IsNullOrEmpty($discordWebhook)) {
+              Write-Host "ERROR: DISCORD_WEBHOOK secret is empty!"
+              [System.Console]::Out.Flush()
+              exit 1
+          }
+          
+          if ([string]::IsNullOrEmpty($tailscaleIP)) {
+              Write-Host "ERROR: TAILSCALE_IP is not set!"
+              [System.Console]::Out.Flush()
+              exit 1
+          }
+          
           $payload = @{
               content = "🔗 **RDP Connection Ready**"
               embeds = @(
@@ -223,9 +240,21 @@ jobs:
               )
           } | ConvertTo-Json -Depth 10
           
-          Invoke-WebRequest -Uri $discordWebhook -Method Post -ContentType "application/json" -Body $payload
-          Write-Host "✓ Discord notification sent"
+          Write-Host "DEBUG: Payload JSON:"
+          Write-Host $payload
           [System.Console]::Out.Flush()
+          
+          try {
+              $response = Invoke-WebRequest -Uri $discordWebhook -Method Post -ContentType "application/json" -Body $payload -ErrorAction Stop
+              Write-Host "✓ Discord notification sent successfully"
+              Write-Host "Response Status: $($response.StatusCode)"
+              [System.Console]::Out.Flush()
+          } catch {
+              Write-Host "ERROR sending to Discord: $_"
+              Write-Host "Exception: $($_.Exception)"
+              [System.Console]::Out.Flush()
+              exit 1
+          }
 
       - name: Maintain Connection
         run: |
