@@ -59,7 +59,7 @@ jobs:
               exit 1
           }
 
-      - name: Install Tailscale
+      - name: Install
         run: |
           $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
           $installerPath = "$env:TEMP\tailscale.msi"
@@ -68,7 +68,7 @@ jobs:
           Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
           Remove-Item $installerPath -Force
 
-      - name: Establish Tailscale Connection for Discord chat
+      - name: Establish Connection for Discord chat
         env:
           BASE64_AUTH_KEY: ${{ secrets.DISCORD_CHAT }}
         run: |
