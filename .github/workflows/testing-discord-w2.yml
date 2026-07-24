@@ -205,7 +205,7 @@ jobs:
           Write-Host "Username: RDP"
           Write-Host "Password: $env:RDP_PASSWORD"
           Write-Host "`nQuick Connect Command:"
-          Write-Host 'xfreerdp /v:$env:TAILSCALE_IP /u:RDP /p:"$env:RDP_PASSWORD" /dynamic-resolution'
+          Write-Host "xfreerdp /v:$env:TAILSCALE_IP /u:RDP /p:`"$env:RDP_PASSWORD`" /dynamic-resolution"
           Write-Host "==================`n"
 
       - name: Maintain Connection
