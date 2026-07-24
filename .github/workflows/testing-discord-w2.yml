@@ -116,7 +116,7 @@ jobs:
 
       - name: Configure Environment
         run: |
-          Write-Host "Applying settings to the Default User profile so the RDP user inherits them..."
+          Write-Host "Applying Default User settings for Icons..."
           
           # Map the HKU drive for PowerShell
           New-PSDrive -Name HKU -PSProvider Registry -Root HKEY_USERS -ErrorAction Ignore | Out-Null
@@ -124,17 +124,7 @@ jobs:
           # Load Default User registry
           reg load "HKU\DefaultUser" "C:\Users\Default\NTUSER.DAT"
           
-          # 1. Dark Mode
-          $themeKey = "HKU:\DefaultUser\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
-          if (-not (Test-Path $themeKey)) { New-Item -Path $themeKey -Force | Out-Null }
-          Set-ItemProperty -Path $themeKey -Name "AppsUseLightTheme" -Value 0
-          Set-ItemProperty -Path $themeKey -Name "SystemUsesLightTheme" -Value 0
-          
-          # 2. Solid Black Background
-          Set-ItemProperty -Path "HKU:\DefaultUser\Control Panel\Colors" -Name "Background" -Value "0 0 0"
-          Set-ItemProperty -Path "HKU:\DefaultUser\Control Panel\Desktop" -Name "Wallpaper" -Value ""
-          
-          # 3. Icons (Matching image_e3cbc6.png exactly)
+          # Icons (Matching image_e3cbc6.png exactly)
           $iconKey = "HKU:\DefaultUser\Software\Microsoft\Windows\CurrentVersion\Explorer\HideDesktopIcons\NewStartPanel"
           if (-not (Test-Path $iconKey)) { New-Item -Path $iconKey -Force | Out-Null }
           Set-ItemProperty -Path $iconKey -Name "{20D04FE0-3AEA-1069-A2D8-08002B30309D}" -Value 0 # Computer
@@ -143,21 +133,22 @@ jobs:
           Set-ItemProperty -Path $iconKey -Name "{5399E694-6CE5-4D6C-8FCE-1D8870FDCBA0}" -Value 0 # Control Panel
           Set-ItemProperty -Path $iconKey -Name "{645FF040-5081-101B-9F08-00AA002F954E}" -Value 0 # Recycle Bin
           
-          # Apply hidden files and extensions to Default User as well to guarantee it works for RDP
-          $advKey = "HKU:\DefaultUser\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced"
-          if (-not (Test-Path $advKey)) { New-Item -Path $advKey -Force | Out-Null }
-          Set-ItemProperty -Path $advKey -Name "HideFileExt" -Value 0
-          Set-ItemProperty -Path $advKey -Name "Hidden" -Value 1
-          
           # Unload Default User registry securely
           [gc]::Collect()
           Start-Sleep -Seconds 2
           reg unload "HKU\DefaultUser"
           
-          Write-Host "Running requested explicit command (expecting red Stop-Process error)..."
+          Write-Host "Running custom Dark Mode and Background commands..."
           
-          # 4. User's exact requested command
-          # 'Continue' ensures the error prints but does not halt the workflow
+          # 1. Dark Mode
+          Set-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize" -Name AppsUseLightTheme -Value 0; Set-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize" -Name SystemUsesLightTheme -Value 0; Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue
+          
+          # 2. Solid Black Background
+          Add-Type '[DllImport("user32.dll")]public static extern bool SystemParametersInfo(int uAction,int uParam,string lpvParam,int fuWinIni);' -Name Native -Namespace Win32; Set-ItemProperty "HKCU:\Control Panel\Colors" -Name Background -Value "0 0 0"; [Win32.Native]::SystemParametersInfo(20,0,"",3)
+          
+          Write-Host "Running requested explicit command for hidden files (expecting red Stop-Process error)..."
+          
+          # 3. View File Extensions and Hidden Files
           $ErrorActionPreference = 'Continue'
           Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name HideFileExt -Value 0; Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name Hidden -Value 1; Stop-Process -Name explorer -Force
 
