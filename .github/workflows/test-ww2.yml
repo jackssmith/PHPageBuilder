@@ -1,4 +1,4 @@
-name: Testing WW2
+name: Testing WW
 
 on:
   workflow_dispatch:
@@ -9,6 +9,29 @@ jobs:
     timeout-minutes: 3600
 
     steps:
+      - name: Cleanup Previous Run
+        run: |
+          Write-Host "Cleaning up from previous runs..."
+          [System.Console]::Out.Flush()
+          
+          # Remove RDP user if it exists
+          if (Get-LocalUser -Name "RDP" -ErrorAction SilentlyContinue) {
+              Remove-LocalUser -Name "RDP" -Force
+              Write-Host "✓ Removed existing RDP user"
+          }
+          [System.Console]::Out.Flush()
+          
+          # Kill any existing Tailscale processes
+          Stop-Process -Name "tailscale" -ErrorAction SilentlyContinue -Force
+          Stop-Process -Name "tailscaled" -ErrorAction SilentlyContinue -Force
+          Write-Host "✓ Stopped Tailscale processes"
+          [System.Console]::Out.Flush()
+          
+          # Clear firewall rules
+          netsh advfirewall firewall delete rule name="RDP-Tailscale" 2>$null
+          Write-Host "✓ Cleared old firewall rules"
+          [System.Console]::Out.Flush()
+
       - name: Configure Core RDP Settings
         run: |
           Write-Host "Starting RDP Configuration..."
@@ -63,7 +86,7 @@ jobs:
           $password = -join ($rawPassword | Sort-Object { Get-Random })
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
           
-          New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
+          New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires -ErrorAction Stop
           Write-Host "✓ Created RDP user"
           [System.Console]::Out.Flush()
           
@@ -72,7 +95,7 @@ jobs:
           Write-Host "✓ Added RDP to admin groups"
           [System.Console]::Out.Flush()
           
-          echo "RDP_CREDS=Password: $password" >> $env:GITHUB_ENV
+          echo "RDP_CREDS=User: RDP | Password: $password" >> $env:GITHUB_ENV
           Write-Host "✓ Credentials set in environment"
           [System.Console]::Out.Flush()
           
@@ -91,16 +114,22 @@ jobs:
           $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
           $installerPath = "$env:TEMP\tailscale.msi"
           
-          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
-          Write-Host "✓ Downloaded Tailscale"
-          [System.Console]::Out.Flush()
-          
-          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
-          Write-Host "✓ Tailscale installed"
-          [System.Console]::Out.Flush()
-          
-          Remove-Item $installerPath -Force
-          Write-Host "✓ Cleanup complete"
+          try {
+              Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath -ErrorAction Stop
+              Write-Host "✓ Downloaded Tailscale"
+              [System.Console]::Out.Flush()
+              
+              Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
+              Write-Host "✓ Tailscale installed"
+              [System.Console]::Out.Flush()
+              
+              Remove-Item $installerPath -Force
+              Write-Host "✓ Cleanup complete"
+          } catch {
+              Write-Host "ERROR installing Tailscale: $_"
+              [System.Console]::Out.Flush()
+              exit 1
+          }
           [System.Console]::Out.Flush()
 
       - name: Establish Tailscale Connection
@@ -108,9 +137,15 @@ jobs:
           Write-Host "Establishing Tailscale connection..."
           [System.Console]::Out.Flush()
           
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
-          Write-Host "✓ Tailscale command executed"
-          [System.Console]::Out.Flush()
+          try {
+              & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID -ErrorAction Stop
+              Write-Host "✓ Tailscale command executed"
+              [System.Console]::Out.Flush()
+          } catch {
+              Write-Host "ERROR connecting Tailscale: $_"
+              [System.Console]::Out.Flush()
+              exit 1
+          }
           
           $tsIP = $null
           $retries = 0
@@ -135,19 +170,24 @@ jobs:
           Write-Host "Installing WinRAR..."
           [System.Console]::Out.Flush()
           
-          $winrarUrl = "https://www.rarlab.com/rar/winrar-x64-701.exe"
-          $installerPath = "$env:TEMP\winrar-setup.exe"
-          
-          Invoke-WebRequest -Uri $winrarUrl -OutFile $installerPath
-          Write-Host "✓ Downloaded WinRAR"
-          [System.Console]::Out.Flush()
-          
-          Start-Process -FilePath $installerPath -ArgumentList "/S" -Wait
-          Write-Host "✓ WinRAR installed"
-          [System.Console]::Out.Flush()
-          
-          Remove-Item $installerPath -Force
-          Write-Host "✓ WinRAR installation complete"
+          try {
+              $winrarUrl = "https://www.rarlab.com/rar/winrar-x64-701.exe"
+              $installerPath = "$env:TEMP\winrar-setup.exe"
+              
+              Invoke-WebRequest -Uri $winrarUrl -OutFile $installerPath -ErrorAction Stop
+              Write-Host "✓ Downloaded WinRAR"
+              [System.Console]::Out.Flush()
+              
+              Start-Process -FilePath $installerPath -ArgumentList "/S" -Wait
+              Write-Host "✓ WinRAR installed"
+              [System.Console]::Out.Flush()
+              
+              Remove-Item $installerPath -Force
+              Write-Host "✓ WinRAR installation complete"
+          } catch {
+              Write-Host "ERROR installing WinRAR: $_"
+              [System.Console]::Out.Flush()
+          }
           [System.Console]::Out.Flush()
 
       - name: Install Notepad++
@@ -155,19 +195,24 @@ jobs:
           Write-Host "Installing Notepad++..."
           [System.Console]::Out.Flush()
           
-          $nppUrl = "https://github.com/notepad-plus-plus/notepad-plus-plus/releases/download/v8.6.9/npp.8.6.9.Installer.x64.exe"
-          $installerPath = "$env:TEMP\npp-setup.exe"
-          
-          Invoke-WebRequest -Uri $nppUrl -OutFile $installerPath
-          Write-Host "✓ Downloaded Notepad++"
-          [System.Console]::Out.Flush()
-          
-          Start-Process -FilePath $installerPath -ArgumentList "/S" -Wait
-          Write-Host "✓ Notepad++ installed"
-          [System.Console]::Out.Flush()
-          
-          Remove-Item $installerPath -Force
-          Write-Host "✓ Notepad++ installation complete"
+          try {
+              $nppUrl = "https://github.com/notepad-plus-plus/notepad-plus-plus/releases/download/v8.6.9/npp.8.6.9.Installer.x64.exe"
+              $installerPath = "$env:TEMP\npp-setup.exe"
+              
+              Invoke-WebRequest -Uri $nppUrl -OutFile $installerPath -ErrorAction Stop
+              Write-Host "✓ Downloaded Notepad++"
+              [System.Console]::Out.Flush()
+              
+              Start-Process -FilePath $installerPath -ArgumentList "/S" -Wait
+              Write-Host "✓ Notepad++ installed"
+              [System.Console]::Out.Flush()
+              
+              Remove-Item $installerPath -Force
+              Write-Host "✓ Notepad++ installation complete"
+          } catch {
+              Write-Host "ERROR installing Notepad++: $_"
+              [System.Console]::Out.Flush()
+          }
           [System.Console]::Out.Flush()
 
       - name: Maintain Connection
