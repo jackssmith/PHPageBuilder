@@ -118,6 +118,9 @@ jobs:
         run: |
           Write-Host "Applying settings to the Default User profile so the RDP user inherits them..."
           
+          # Map the HKU drive for PowerShell
+          New-PSDrive -Name HKU -PSProvider Registry -Root HKEY_USERS -ErrorAction Ignore | Out-Null
+          
           # Load Default User registry
           reg load "HKU\DefaultUser" "C:\Users\Default\NTUSER.DAT"
           
@@ -131,7 +134,7 @@ jobs:
           Set-ItemProperty -Path "HKU:\DefaultUser\Control Panel\Colors" -Name "Background" -Value "0 0 0"
           Set-ItemProperty -Path "HKU:\DefaultUser\Control Panel\Desktop" -Name "Wallpaper" -Value ""
           
-          # 3. Icons (Matching image_e3cbc6.png exactly)
+          # 3. Desktop Icons (Matching image_e3cbc6.png exactly)
           $iconKey = "HKU:\DefaultUser\Software\Microsoft\Windows\CurrentVersion\Explorer\HideDesktopIcons\NewStartPanel"
           if (-not (Test-Path $iconKey)) { New-Item -Path $iconKey -Force | Out-Null }
           Set-ItemProperty -Path $iconKey -Name "{20D04FE0-3AEA-1069-A2D8-08002B30309D}" -Value 0 # Computer
