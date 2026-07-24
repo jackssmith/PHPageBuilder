@@ -102,33 +102,81 @@ jobs:
           Remove-Item $installerPath -Force
           Write-Host "✓ Cleanup complete"
           [System.Console]::Out.Flush()
-
+    
       - name: Establish Tailscale Connection
+        shell: pwsh
         run: |
-          Write-Host "Establishing Tailscale connection..."
-          [System.Console]::Out.Flush()
-          
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
-          Write-Host "✓ Tailscale command executed"
-          [System.Console]::Out.Flush()
-          
-          $tsIP = $null
-          $retries = 0
-          while (-not $tsIP -and $retries -lt 10) {
-              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-              Write-Host "  [Attempt $($retries + 1)/10] Waiting for IP assignment..."
-              [System.Console]::Out.Flush()
-              Start-Sleep -Seconds 5
-              $retries++
-          }
-          
-          if (-not $tsIP) {
-              Write-Error "Tailscale IP not assigned. Exiting."
+          $ErrorActionPreference = "Stop"
+    
+          Write-Host "========================================"
+          Write-Host "Starting Tailscale Connection Step"
+          Write-Host "Time: $(Get-Date)"
+          Write-Host "========================================"
+    
+          $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
+    
+          if (-not (Test-Path $tailscale)) {
+              Write-Error "Tailscale executable not found at: $tailscale"
               exit 1
           }
-          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
-          Write-Host "✓ Tailscale IP assigned: $tsIP"
-          [System.Console]::Out.Flush()
+    
+          Write-Host "✓ Tailscale executable found"
+          Write-Host "Version:"
+          & $tailscale version
+    
+          Write-Host ""
+          Write-Host "========== BEFORE tailscale up =========="
+    
+          & $tailscale up `
+              --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} `
+              --hostname=gh-runner-$env:GITHUB_RUN_ID
+    
+          Write-Host "========== AFTER tailscale up =========="
+    
+          Write-Host ""
+          Write-Host "Checking Tailscale status..."
+          & $tailscale status
+    
+          Write-Host ""
+          Write-Host "Waiting for IPv4 address..."
+    
+          $tsIP = $null
+    
+          for ($i = 1; $i -le 10; $i++) {
+    
+              Write-Host "Attempt $i/10"
+    
+              try {
+                  $tsIP = (& $tailscale ip -4 | Select-Object -First 1).Trim()
+              }
+              catch {
+                  Write-Host "tailscale ip failed: $_"
+              }
+    
+              if ($tsIP) {
+                  Write-Host "✓ IP Address: $tsIP"
+                  break
+              }
+    
+              Write-Host "No IP yet, sleeping 5 seconds..."
+              Start-Sleep 5
+          }
+    
+          if (-not $tsIP) {
+              Write-Error "Timed out waiting for a Tailscale IP."
+              exit 1
+          }
+    
+          "TAILSCALE_IP=$tsIP" | Out-File `
+              -FilePath $env:GITHUB_ENV `
+              -Append `
+              -Encoding utf8
+    
+          Write-Host ""
+          Write-Host "========================================"
+          Write-Host "Tailscale Connected Successfully"
+          Write-Host "IP: $tsIP"
+          Write-Host "========================================"
       
       - name: Install WinRAR
         run: |
