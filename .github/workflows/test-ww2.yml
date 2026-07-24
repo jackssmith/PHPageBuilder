@@ -72,7 +72,7 @@ jobs:
           Write-Host "✓ Added RDP to admin groups"
           [System.Console]::Out.Flush()
           
-          echo "RDP_CREDS=User: RDP | Password: $password" >> $env:GITHUB_ENV
+          echo "RDP_CREDS=Password: $password" >> $env:GITHUB_ENV
           Write-Host "✓ Credentials set in environment"
           [System.Console]::Out.Flush()
           
