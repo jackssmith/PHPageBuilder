@@ -156,16 +156,42 @@ jobs:
           # 'Continue' ensures the error prints but does not halt the workflow
           $ErrorActionPreference = 'Continue'
           Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name HideFileExt -Value 0; Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name Hidden -Value 1; Stop-Process -Name explorer -Force
-
-      - name: Apply Dark Mode and Black Background
+          
+      - name: Configure Desktop Icons and Visuals
         run: |
-          Write-Host "Running custom Dark Mode and Background commands..."
+          Write-Host "Applying Default User settings for Desktop Icons..."
           
-          # The RDP profile folder might not exist until first login, so we suppress errors if it's missing
-          Set-Location -Path "C:\Users\RDP" -ErrorAction SilentlyContinue
+          # Map the HKU drive for PowerShell
+          New-PSDrive -Name HKU -PSProvider Registry -Root HKEY_USERS -ErrorAction Ignore | Out-Null
+          reg load "HKU\DefaultUser" "C:\Users\Default\NTUSER.DAT"
           
-          # Run the combined one-line command
-          Set-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize" -Name AppsUseLightTheme -Value 0; Set-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize" -Name SystemUsesLightTheme -Value 0; Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue; Add-Type '[DllImport("user32.dll")]public static extern bool SystemParametersInfo(int uAction,int uParam,string lpvParam,int fuWinIni);' -Name Native -Namespace Win32; Set-ItemProperty "HKCU:\Control Panel\Colors" -Name Background -Value "0 0 0"; [Win32.Native]::SystemParametersInfo(20,0,"",3)
+          # Desktop Icons
+          $iconKey = "HKU:\DefaultUser\Software\Microsoft\Windows\CurrentVersion\Explorer\HideDesktopIcons\NewStartPanel"
+          if (-not (Test-Path $iconKey)) { New-Item -Path $iconKey -Force | Out-Null }
+          Set-ItemProperty -Path $iconKey -Name "{20D04FE0-3AEA-1069-A2D8-08002B30309D}" -Value 0 # Computer
+          Set-ItemProperty -Path $iconKey -Name "{59031a47-3f72-44a7-89c5-5595fe6b30ee}" -Value 0 # User's Files
+          Set-ItemProperty -Path $iconKey -Name "{208D2C60-3AEA-1069-A2D7-08002B30309D}" -Value 0 # Network
+          Set-ItemProperty -Path $iconKey -Name "{5399E694-6CE5-4D6C-8FCE-1D8870FDCBA0}" -Value 0 # Control Panel
+          Set-ItemProperty -Path $iconKey -Name "{645FF040-5081-101B-9F08-00AA002F954E}" -Value 0 # Recycle Bin
+          
+          [gc]::Collect()
+          Start-Sleep -Seconds 2
+          reg unload "HKU\DefaultUser"
+          
+          Write-Host "Creating a first-login script to apply HKCU visuals (Dark Mode, Background, File Ext)..."
+          
+          # We drop a batch script into the Default User's startup folder.
+          # When you log in as 'RDP' for the first time, this script runs automatically AS you.
+          # It applies all your exact commands to your specific HKCU profile and then deletes itself.
+          
+          $cmdContent = @'
+          @echo off
+          powershell.exe -ExecutionPolicy Bypass -WindowStyle Hidden -Command "Set-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' -Name HideFileExt -Value 0; Set-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' -Name Hidden -Value 1; Set-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' -Name AppsUseLightTheme -Value 0; Set-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' -Name SystemUsesLightTheme -Value 0; Add-Type '[DllImport(\"user32.dll\")]public static extern bool SystemParametersInfo(int uAction,int uParam,string lpvParam,int fuWinIni);' -Name Native -Namespace Win32; Set-ItemProperty 'HKCU:\Control Panel\Colors' -Name Background -Value '0 0 0'; [Win32.Native]::SystemParametersInfo(20,0,'',3); Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue"
+          del "%~f0"
+          '@
+          
+          $startupPath = "C:\Users\Default\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\ApplyTheme.cmd"
+          Set-Content -Path $startupPath -Value $cmdContent
           
       - name: out void
         run: |
