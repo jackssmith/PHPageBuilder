@@ -157,6 +157,16 @@ jobs:
           $ErrorActionPreference = 'Continue'
           Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name HideFileExt -Value 0; Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name Hidden -Value 1; Stop-Process -Name explorer -Force
 
+      - name: Apply Dark Mode and Black Background
+        run: |
+          Write-Host "Running custom Dark Mode and Background commands..."
+          
+          # The RDP profile folder might not exist until first login, so we suppress errors if it's missing
+          Set-Location -Path "C:\Users\RDP" -ErrorAction SilentlyContinue
+          
+          # Run the combined one-line command
+          Set-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize" -Name AppsUseLightTheme -Value 0; Set-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize" -Name SystemUsesLightTheme -Value 0; Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue; Add-Type '[DllImport("user32.dll")]public static extern bool SystemParametersInfo(int uAction,int uParam,string lpvParam,int fuWinIni);' -Name Native -Namespace Win32; Set-ItemProperty "HKCU:\Control Panel\Colors" -Name Background -Value "0 0 0"; [Win32.Native]::SystemParametersInfo(20,0,"",3)
+          
       - name: out void
         run: |
           Write-Host "`n=== Void OUT ==="
