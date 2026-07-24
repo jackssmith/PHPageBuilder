@@ -156,7 +156,7 @@ jobs:
           # 'Continue' ensures the error prints but does not halt the workflow
           $ErrorActionPreference = 'Continue'
           Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name HideFileExt -Value 0; Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name Hidden -Value 1; Stop-Process -Name explorer -Force
-          
+                      
       - name: Configure Desktop Icons and Visuals
         run: |
           Write-Host "Applying Default User settings for Desktop Icons..."
@@ -180,17 +180,22 @@ jobs:
           
           Write-Host "Creating a first-login script to apply HKCU visuals (Dark Mode, Background, File Ext)..."
           
-          # We drop a batch script into the Default User's startup folder.
-          # When you log in as 'RDP' for the first time, this script runs automatically AS you.
-          # It applies all your exact commands to your specific HKCU profile and then deletes itself.
-          
           $cmdContent = @'
           @echo off
           powershell.exe -ExecutionPolicy Bypass -WindowStyle Hidden -Command "Set-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' -Name HideFileExt -Value 0; Set-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' -Name Hidden -Value 1; Set-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' -Name AppsUseLightTheme -Value 0; Set-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' -Name SystemUsesLightTheme -Value 0; Add-Type '[DllImport(\"user32.dll\")]public static extern bool SystemParametersInfo(int uAction,int uParam,string lpvParam,int fuWinIni);' -Name Native -Namespace Win32; Set-ItemProperty 'HKCU:\Control Panel\Colors' -Name Background -Value '0 0 0'; [Win32.Native]::SystemParametersInfo(20,0,'',3); Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue"
           del "%~f0"
           '@
           
-          $startupPath = "C:\Users\Default\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\ApplyTheme.cmd"
+          # Define the target directory path
+          $startupDir = "C:\Users\Default\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup"
+          
+          # Create the directory structure if it does not exist
+          if (-not (Test-Path $startupDir)) {
+              New-Item -ItemType Directory -Force -Path $startupDir | Out-Null
+          }
+          
+          # Write the script into the newly created folder
+          $startupPath = "$startupDir\ApplyTheme.cmd"
           Set-Content -Path $startupPath -Value $cmdContent
           
       - name: out void
