@@ -4,14 +4,14 @@ on:
   workflow_dispatch:
 
 jobs:
-  secure-rdp:
+  secure-void:
     runs-on: windows-latest
     timeout-minutes: 3600
 
     steps:
-      - name: Configure Core RDP Settings
+      - name: Configure Core void Settings
         run: |
-          Write-Host "Starting RDP Configuration..."
+          Write-Host "Starting void Configuration..."
           [System.Console]::Out.Flush()
           
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
@@ -19,32 +19,32 @@ jobs:
           Write-Host "✓ Disabled TSConnections"
           [System.Console]::Out.Flush()
           
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\void-Tcp' `
                              -Name "UserAuthentication" -Value 0 -Force
           Write-Host "✓ Disabled UserAuthentication"
           [System.Console]::Out.Flush()
           
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\void-Tcp' `
                              -Name "SecurityLayer" -Value 0 -Force
           Write-Host "✓ Set SecurityLayer to 0"
           [System.Console]::Out.Flush()
 
-          netsh advfirewall firewall delete rule name="RDP-Tailscale" 2>$null
+          netsh advfirewall firewall delete rule name="void-Tailscale" 2>$null
           Write-Host "✓ Cleared existing firewall rule"
           [System.Console]::Out.Flush()
           
-          netsh advfirewall firewall add rule name="RDP-Tailscale" `
+          netsh advfirewall firewall add rule name="void-Tailscale" `
             dir=in action=allow protocol=TCP localport=3389
-          Write-Host "✓ Added RDP firewall rule"
+          Write-Host "✓ Added void firewall rule"
           [System.Console]::Out.Flush()
 
           Restart-Service -Name TermService -Force
-          Write-Host "✓ Restarted RDP Service"
+          Write-Host "✓ Restarted void Service"
           [System.Console]::Out.Flush()
 
-      - name: Create RDP User with Secure Password
+      - name: Create void User with Secure Password
         run: |
-          Write-Host "Creating RDP user..."
+          Write-Host "Creating void user..."
           [System.Console]::Out.Flush()
           
           Add-Type -AssemblyName System.Security
@@ -63,24 +63,24 @@ jobs:
           $password = -join ($rawPassword | Sort-Object { Get-Random })
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
           
-          New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
-          Write-Host "✓ Created RDP user"
+          New-LocalUser -Name "void" -Password $securePass -AccountNeverExpires
+          Write-Host "✓ Created void user"
           [System.Console]::Out.Flush()
           
-          Add-LocalGroupMember -Group "Administrators" -Member "RDP"
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
-          Write-Host "✓ Added RDP to admin groups"
+          Add-LocalGroupMember -Group "Administrators" -Member "void"
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "void"
+          Write-Host "✓ Added void to admin groups"
           [System.Console]::Out.Flush()
           
-          echo "RDP_CREDS=User: RDP | Password: $password" >> $env:GITHUB_ENV
+          echo "void_CREDS=User: void | Password: $password" >> $env:GITHUB_ENV
           Write-Host "✓ Credentials set in environment"
           [System.Console]::Out.Flush()
           
-          if (-not (Get-LocalUser -Name "RDP")) {
+          if (-not (Get-LocalUser -Name "void")) {
               Write-Error "User creation failed"
               exit 1
           }
-          Write-Host "✓ RDP user verified"
+          Write-Host "✓ void user verified"
           [System.Console]::Out.Flush()
 
       - name: Install Tailscale
@@ -102,81 +102,33 @@ jobs:
           Remove-Item $installerPath -Force
           Write-Host "✓ Cleanup complete"
           [System.Console]::Out.Flush()
-    
+
       - name: Establish Tailscale Connection
-        shell: pwsh
         run: |
-          $ErrorActionPreference = "Stop"
-    
-          Write-Host "========================================"
-          Write-Host "Starting Tailscale Connection Step"
-          Write-Host "Time: $(Get-Date)"
-          Write-Host "========================================"
-    
-          $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
-    
-          if (-not (Test-Path $tailscale)) {
-              Write-Error "Tailscale executable not found at: $tailscale"
-              exit 1
-          }
-    
-          Write-Host "✓ Tailscale executable found"
-          Write-Host "Version:"
-          & $tailscale version
-    
-          Write-Host ""
-          Write-Host "========== BEFORE tailscale up =========="
-    
-          & $tailscale up `
-              --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} `
-              --hostname=gh-runner-$env:GITHUB_RUN_ID
-    
-          Write-Host "========== AFTER tailscale up =========="
-    
-          Write-Host ""
-          Write-Host "Checking Tailscale status..."
-          & $tailscale status
-    
-          Write-Host ""
-          Write-Host "Waiting for IPv4 address..."
-    
+          Write-Host "Establishing Tailscale connection..."
+          [System.Console]::Out.Flush()
+          
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
+          Write-Host "✓ Tailscale command executed"
+          [System.Console]::Out.Flush()
+          
           $tsIP = $null
-    
-          for ($i = 1; $i -le 10; $i++) {
-    
-              Write-Host "Attempt $i/10"
-    
-              try {
-                  $tsIP = (& $tailscale ip -4 | Select-Object -First 1).Trim()
-              }
-              catch {
-                  Write-Host "tailscale ip failed: $_"
-              }
-    
-              if ($tsIP) {
-                  Write-Host "✓ IP Address: $tsIP"
-                  break
-              }
-    
-              Write-Host "No IP yet, sleeping 5 seconds..."
-              Start-Sleep 5
+          $retries = 0
+          while (-not $tsIP -and $retries -lt 10) {
+              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+              Write-Host "  [Attempt $($retries + 1)/10] Waiting for IP assignment..."
+              [System.Console]::Out.Flush()
+              Start-Sleep -Seconds 5
+              $retries++
           }
-    
+          
           if (-not $tsIP) {
-              Write-Error "Timed out waiting for a Tailscale IP."
+              Write-Error "Tailscale IP not assigned. Exiting."
               exit 1
           }
-    
-          "TAILSCALE_IP=$tsIP" | Out-File `
-              -FilePath $env:GITHUB_ENV `
-              -Append `
-              -Encoding utf8
-    
-          Write-Host ""
-          Write-Host "========================================"
-          Write-Host "Tailscale Connected Successfully"
-          Write-Host "IP: $tsIP"
-          Write-Host "========================================"
+          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+          Write-Host "✓ Tailscale IP assigned: $tsIP"
+          [System.Console]::Out.Flush()
       
       - name: Install WinRAR
         run: |
@@ -220,18 +172,18 @@ jobs:
 
       - name: Maintain Connection
         run: |
-          Write-Host "`n=== RDP ACCESS ==="
+          Write-Host "`n=== void ACCESS ==="
           Write-Host "Address: $env:TAILSCALE_IP"
-          Write-Host "Username: RDP"
-          Write-Host "Password: $(echo $env:RDP_CREDS)"
-          Write-Host "xfreerdp /v:$env:TAILSCALE_IP /u:RDP /p:'$env:RDP_CREDS' /dynamic-resolution"
+          Write-Host "Username: void"
+          Write-Host "Password: $(echo $env:void_CREDS)"
+          Write-Host "xfreevoid /v:$env:TAILSCALE_IP /u:void /p:'$env:void_CREDS' /dynamic-resolution"
           Write-Host "==================`n"
           [System.Console]::Out.Flush()
           
           $iteration = 0
           while ($true) {
               $iteration++
-              Write-Host "[$(Get-Date -Format 'HH:mm:ss')] RDP Active (iteration: $iteration) - Use Ctrl+C in workflow to terminate"
+              Write-Host "[$(Get-Date -Format 'HH:mm:ss')] void Active (iteration: $iteration) - Use Ctrl+C in workflow to terminate"
               [System.Console]::Out.Flush()
               Start-Sleep -Seconds 60
           }
