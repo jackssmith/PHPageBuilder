@@ -1,116 +1,139 @@
 <?php
 
+declare(strict_types=1);
+
 namespace PHPageBuilder\Modules\GrapesJS\Thumb;
 
+use Exception;
 use PHPageBuilder\Contracts\ThemeContract;
 use PHPageBuilder\Modules\GrapesJS\PageRenderer;
-use PHPageBuilder\Page;
 use PHPageBuilder\ThemeBlock;
-use Exception;
 
 class ThumbGenerator
 {
-    /**
-     * @var ThemeContract $theme
-     */
-    protected $theme;
+    protected ThemeContract $theme;
 
-    /**
-     * ThumbGenerator constructor.
-     *
-     * @param ThemeContract $theme
-     */
     public function __construct(ThemeContract $theme)
     {
         $this->theme = $theme;
     }
 
     /**
-     * Handle requests to render and store block thumbnails.
+     * Handle thumbnail-related requests.
      *
-     * @param $action
-     * @return bool
      * @throws Exception
      */
-    public function handleThumbRequest($action)
+    public function handleThumbRequest(string $action): bool
     {
         phpb_set_in_editmode();
 
-        if ($action === 'renderNextBlockThumb') {
-            $this->renderNextBlockThumb();
-            exit();
-        }
-        if ($action !== 'upload' || !isset($_POST) || !isset($_POST['block']) || !isset($_POST['data'])) {
+        return match ($action) {
+            'renderNextBlockThumb' => $this->handleRenderRequest(),
+            'upload'               => $this->handleUploadRequest(),
+            default                => false,
+        };
+    }
+
+    /**
+     * Render the next thumbnail.
+     *
+     * @throws Exception
+     */
+    protected function handleRenderRequest(): bool
+    {
+        $this->renderNextBlockThumb();
+        exit;
+    }
+
+    /**
+     * Upload and save a thumbnail.
+     *
+     * @throws Exception
+     */
+    protected function handleUploadRequest(): bool
+    {
+        $blockSlug = $_POST['block'] ?? null;
+        $imageData = $_POST['data'] ?? null;
+
+        if (!$blockSlug || !$imageData) {
             return false;
         }
+
         foreach ($this->theme->getThemeBlocks() as $block) {
-            if ($_POST['block'] === $block->getSlug()) {
-                $this->r_mkdir(dirname($block->getThumbPath()));
-                $file = fopen($block->getThumbPath(), "wb");
-                fwrite($file, $this->getRawData($_POST['data']));
-                fclose($file);
-                exit();
+            if ($block->getSlug() !== $blockSlug) {
+                continue;
             }
+
+            $this->ensureDirectory(dirname($block->getThumbPath()));
+
+            $bytes = file_put_contents(
+                $block->getThumbPath(),
+                $this->decodeImage($imageData)
+            );
+
+            if ($bytes === false) {
+                throw new Exception(
+                    sprintf(
+                        'Unable to write thumbnail for block "%s".',
+                        $blockSlug
+                    )
+                );
+            }
+
+            exit;
         }
+
         return false;
     }
 
     /**
-     * Create directories recursively.
-     *
-     * @param  string  $path        Path to create
-     * @param  integer $mode        Optional permissions
-     * @return boolean Success
+     * Ensure a directory exists.
      */
-    protected function r_mkdir($path, $mode = 0777) {
-        return is_dir($path) || ( $this->r_mkdir(dirname($path), $mode) && $this->_mkdir($path, $mode) );
-    }
-
-    /**
-     * Create directory.
-     *
-     * @param  string  $path        Path to create
-     * @param  integer $mode        Optional permissions
-     * @return boolean Success
-     */
-    protected function _mkdir($path, $mode = 0777) {
-        $old = umask(0);
-        $res = @mkdir($path, $mode);
-        umask($old);
-        return $res;
-    }
-
-    /**
-     * Return binary image data from the given base64 encoded string.
-     *
-     * @param $base64ImageData
-     * @return string
-     * @throws Exception
-     */
-    protected function getRawData($base64ImageData)
+    protected function ensureDirectory(string $directory): void
     {
-        if (preg_match('/^data:image\/(\w+);base64,/', $base64ImageData, $type)) {
-            $data = substr($base64ImageData, strpos($base64ImageData, ',') + 1);
-            $type = strtolower($type[1]);
-            if (! in_array($type, ['jpg', 'jpeg', 'png'])) {
-                throw new Exception('Invalid image type');
-            }
-
-            $data = base64_decode($data);
-            if ($data === false) {
-                throw new Exception('Decode failed');
-            }
-            return $data;
+        if (is_dir($directory)) {
+            return;
         }
-        throw new Exception('Invalid data URI');
+
+        if (!mkdir($directory, 0777, true) && !is_dir($directory)) {
+            throw new Exception(
+                sprintf('Unable to create directory "%s".', $directory)
+            );
+        }
     }
 
     /**
-     * Render the next missing or outdated thumb of the given theme.
+     * Decode a base64 image.
      *
      * @throws Exception
      */
-    public function renderNextBlockThumb()
+    protected function decodeImage(string $base64): string
+    {
+        if (!preg_match(
+            '#^data:image/(png|jpg|jpeg);base64,#i',
+            $base64,
+            $matches
+        )) {
+            throw new Exception('Invalid image data URI.');
+        }
+
+        $data = substr($base64, strpos($base64, ',') + 1);
+
+        $decoded = base64_decode($data, true);
+
+        if ($decoded === false) {
+            throw new Exception('Failed to decode image.');
+        }
+
+        return $decoded;
+    }
+
+    /**
+     * Render thumbnails for all blocks.
+     *
+     * @throws Exception
+     */
+    public function renderNextBlockThumb(): void
     {
         foreach ($this->theme->getThemeBlocks() as $block) {
             $this->renderThumbForBlock($block);
@@ -118,36 +141,43 @@ class ThumbGenerator
     }
 
     /**
-     * Render a thumbnail for the given block, if no thumb is present or if the thumb needs an update.
+     * Render a thumbnail for a single block.
      *
-     * @param ThemeBlock $block
      * @throws Exception
      */
-    public function renderThumbForBlock(ThemeBlock $block)
+    public function renderThumbForBlock(ThemeBlock $block): void
     {
         phpb_set_in_editmode();
 
-        $thumbPath = $block->getThumbPath();
-        if (file_exists($thumbPath)) {
+        if (file_exists($block->getThumbPath())) {
             return;
         }
 
         $page = phpb_instance('page');
+
         $page->setData([
             'layout' => 'master',
             'data' => [
                 'html' => [
-                    0 => '[block slug="' . $block->getSlug() . '"]'
-                ]
-            ]
+                    sprintf(
+                        '[block slug="%s"]',
+                        $block->getSlug()
+                    ),
+                ],
+            ],
         ]);
 
-        $renderer = phpb_instance(PageRenderer::class, [$this->theme, $page]);
+        $renderer = phpb_instance(
+            PageRenderer::class,
+            [$this->theme, $page]
+        );
+
         echo $renderer->render();
 
         $blockSlug = $block->getSlug();
-        require __DIR__ . '/generator-view.php';
-        exit();
-    }
 
+        require __DIR__ . '/generator-view.php';
+
+        exit;
+    }
 }
