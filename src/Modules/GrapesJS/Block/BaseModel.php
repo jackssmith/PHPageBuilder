@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace PHPageBuilder\Modules\GrapesJS\Block;
 
 use PHPageBuilder\Contracts\PageContract;
@@ -7,53 +9,28 @@ use PHPageBuilder\ThemeBlock;
 
 class BaseModel
 {
-    /**
-     * @var ThemeBlock $block
-     */
-    protected $block;
+    protected ThemeBlock $block;
 
-    /**
-     * @var array $data
-     */
-    protected $data;
+    protected array $data = [];
 
-    /**
-     * @var PageContract $page
-     */
-    protected $page;
+    protected ?PageContract $page;
 
-    /**
-     * @var bool $forPageBuilder
-     */
-    protected $forPageBuilder;
+    protected bool $forPageBuilder = false;
 
-    /**
-     * @var bool $doNotRender
-     */
-    protected $doNotRender;
+    protected bool $doNotRender = false;
 
-    /**
-     * @var bool $hasSkeleton
-     */
-    protected $hasSkeleton;
+    protected bool $hasSkeleton = false;
 
-    /**
-     * @var bool $hasDynamicSkeleton
-     */
-    protected $hasDynamicSkeleton;
+    protected bool $hasDynamicSkeleton = false;
 
-    /**
-     * BaseModel constructor.
-     *
-     * @param ThemeBlock $block
-     * @param array $data
-     * @param PageContract|null $page
-     * @param bool $forPageBuilder
-     */
-    public function __construct(ThemeBlock $block, $data = [], PageContract $page = null, $forPageBuilder = false)
-    {
+    public function __construct(
+        ThemeBlock $block,
+        array $data = [],
+        ?PageContract $page = null,
+        bool $forPageBuilder = false
+    ) {
         $this->block = $block;
-        $this->data = is_array($data) ? $data : [];
+        $this->data = $data;
         $this->page = $page;
         $this->forPageBuilder = $forPageBuilder;
 
@@ -65,80 +42,242 @@ class BaseModel
     }
 
     /**
-     * Initialize the model.
+     * Initialize model.
      */
-    protected function init()
+    protected function init(): void
     {
     }
 
     /**
-     * Return the given setting stored for this block instance using the page builder.
-     *
-     * @param $setting
-     * @param bool $allowHtml
-     * @return string
+     * Get a setting.
      */
-    public function setting($setting, $allowHtml = false)
-    {
-        $value = $this->block->get('settings.' . $setting . '.value');
+    public function setting(
+        string $key,
+        mixed $default = null,
+        bool $allowHtml = false
+    ): mixed {
 
-        if (isset($this->data['settings']['attributes'][$setting])) {
-            $value = $this->data['settings']['attributes'][$setting];
+        $value = $this->data['settings']['attributes'][$key]
+            ?? $this->block->get("settings.{$key}.value")
+            ?? $default;
+
+        return $allowHtml ? $value : phpb_e((string) $value);
+    }
+
+    /**
+     * Determine if a setting exists.
+     */
+    public function hasSetting(string $key): bool
+    {
+        return isset($this->data['settings']['attributes'][$key])
+            || $this->block->get("settings.{$key}.value") !== null;
+    }
+
+    /**
+     * Get arbitrary data using dot notation.
+     */
+    public function data(string $key = null, mixed $default = null): mixed
+    {
+        if ($key === null) {
+            return $this->data;
         }
 
-        return $allowHtml ? $value : phpb_e($value);
+        return $this->arrayGet($this->data, $key, $default);
     }
 
     /**
-     * Return data of this block, passed as argument by a parent block.
-     *
-     * @param $key
-     * @return string
+     * Check if data exists.
      */
-    public function data($key)
+    public function hasData(string $key): bool
     {
-        return $this->data[$key] ?? null;
+        return $this->arrayHas($this->data, $key);
     }
 
     /**
-     * Return data of the child block with the given relative ID.
-     *
-     * @param $childBlockId
-     * @return string
+     * Get child block data.
      */
-    public function childData($childBlockId)
+    public function childData(
+        string $id,
+        mixed $default = null
+    ): mixed {
+        return $this->data['blocks'][$id] ?? $default;
+    }
+
+    /**
+     * Return all child blocks.
+     */
+    public function childBlocks(): array
     {
-        return $this->data['blocks'][$childBlockId] ?? null;
+        return $this->data['blocks'] ?? [];
     }
 
     /**
-     * Whether this page is rendered on the webpage.
-     *
-     * @return false
+     * Get page.
      */
+    public function page(): ?PageContract
+    {
+        return $this->page;
+    }
+
+    /**
+     * Get ThemeBlock.
+     */
+    public function block(): ThemeBlock
+    {
+        return $this->block;
+    }
+
+    /**
+     * Return all data.
+     */
+    public function allData(): array
+    {
+        return $this->data;
+    }
+
+    /**
+     * Whether rendered in builder.
+     */
+    public function isBuilder(): bool
+    {
+        return $this->forPageBuilder;
+    }
+
+    /**
+     * Whether edit mode.
+     */
+    public function isEditMode(): bool
+    {
+        return phpb_in_editmode();
+    }
+
+    /**
+     * Runtime render control.
+     */
+    public function disableRender(bool $state = true): static
+    {
+        $this->doNotRender = $state;
+
+        return $this;
+    }
+
+    /**
+     * Skeleton control.
+     */
+    public function skeleton(bool $state = true): static
+    {
+        $this->hasSkeleton = $state;
+
+        return $this;
+    }
+
+    /**
+     * Dynamic skeleton control.
+     */
+    public function dynamicSkeleton(bool $state = true): static
+    {
+        $this->hasDynamicSkeleton = $state;
+
+        return $this;
+    }
+
     public function doNotRender(): bool
     {
-        return $this->doNotRender ?? false;
+        return $this->doNotRender;
     }
 
-    /**
-     * Whether this block has skeleton loading.
-     *
-     * @return false
-     */
     public function hasSkeleton(): bool
     {
-        return $this->hasSkeleton ?? false;
+        return $this->hasSkeleton;
+    }
+
+    public function hasDynamicSkeleton(): bool
+    {
+        return $this->hasDynamicSkeleton;
     }
 
     /**
-     * Whether this block has dynamic skeleton loading (i.e. partially rendered, but needs to be replaced).
-     *
-     * @return false
+     * Magic property getter.
      */
-    public function hasDynamicSkeleton(): bool
+    public function __get(string $key): mixed
     {
-        return $this->hasDynamicSkeleton ?? false;
+        return $this->data($key);
     }
 
+    /**
+     * Magic property checker.
+     */
+    public function __isset(string $key): bool
+    {
+        return $this->hasData($key);
+    }
+
+    /**
+     * Array helper with dot notation.
+     */
+    protected function arrayGet(
+        array $array,
+        string $key,
+        mixed $default = null
+    ): mixed {
+
+        if (array_key_exists($key, $array)) {
+            return $array[$key];
+        }
+
+        foreach (explode('.', $key) as $segment) {
+
+            if (!is_array($array) || !array_key_exists($segment, $array)) {
+                return $default;
+            }
+
+            $array = $array[$segment];
+        }
+
+        return $array;
+    }
+
+    /**
+     * Dot notation exists helper.
+     */
+    protected function arrayHas(
+        array $array,
+        string $key
+    ): bool {
+
+        foreach (explode('.', $key) as $segment) {
+
+            if (!is_array($array) || !array_key_exists($segment, $array)) {
+                return false;
+            }
+
+            $array = $array[$segment];
+        }
+
+        return true;
+    }
+
+    /**
+     * Merge runtime data.
+     */
+    public function mergeData(array $data): static
+    {
+        $this->data = array_replace_recursive($this->data, $data);
+
+        return $this;
+    }
+
+    /**
+     * Export model state.
+     */
+    public function toArray(): array
+    {
+        return [
+            'data' => $this->data,
+            'forPageBuilder' => $this->forPageBuilder,
+            'doNotRender' => $this->doNotRender,
+            'hasSkeleton' => $this->hasSkeleton,
+            'hasDynamicSkeleton' => $this->hasDynamicSkeleton,
+        ];
+    }
 }
