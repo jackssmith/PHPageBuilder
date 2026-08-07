@@ -6,209 +6,118 @@ use PHPageBuilder\Contracts\PageTranslationContract;
 use PHPageBuilder\Contracts\RouterContract;
 use PHPageBuilder\Repositories\PageTranslationRepository;
 
-class DatabasePageRouter implements RouterContract
+final class DatabasePageRouter implements RouterContract
 {
-    protected PageTranslationRepository $pageTranslationRepository;
+    private array $routes = [];
+    private array $parameters = [];
 
-    /**
-     * Matched route parameters.
-     */
-    protected array $routeParameters = [];
-
-    /**
-     * Cached compiled routes.
-     *
-     * @var array<int, array{id:string, route:string, segments:array<int,string>}>|null
-     */
-    private ?array $compiledRoutes = null;
-
-    public function __construct(PageTranslationRepository $pageTranslationRepository)
-    {
-        $this->pageTranslationRepository = $pageTranslationRepository;
+    public function __construct(
+        private readonly PageTranslationRepository $repository
+    ) {
     }
 
-    /**
-     * Resolve a URL to a page translation.
-     */
     public function resolve(string $url): ?PageTranslationContract
     {
-        $urlSegments = explode('/', $this->normalizeUrl($url));
+        $this->parameters = [];
 
-        foreach ($this->getCompiledRoutes() as $route) {
-            $parameters = $this->matchRoute(
-                $urlSegments,
-                $route['segments']
-            );
-
-            if ($parameters === null) {
+        foreach ($this->compiledRoutes() as $route) {
+            if (!preg_match($route['regex'], $this->normalize($url), $matches)) {
                 continue;
             }
 
-            $this->routeParameters = $parameters;
+            foreach ($route['params'] as $name) {
+                $this->parameters[$name] = urldecode($matches[$name] ?? '');
+            }
 
-            return $this->pageTranslationRepository->findWithId($route['id']);
+            if (isset($matches['wildcard'])) {
+                $this->parameters['wildcard'] = trim($matches['wildcard'], '/');
+            }
+
+            return $this->repository->findWithId($route['id']);
         }
 
         return null;
     }
 
-    /**
-     * Return route parameters from the last successful match.
-     */
     public function getRouteParameters(): array
     {
-        return $this->routeParameters;
+        return $this->parameters;
     }
 
-    /**
-     * Compile and cache all routes.
-     */
-    protected function getCompiledRoutes(): array
+    private function compiledRoutes(): array
     {
-        if ($this->compiledRoutes !== null) {
-            return $this->compiledRoutes;
+        if ($this->routes) {
+            return $this->routes;
         }
 
-        $routes = [];
-
-        foreach ($this->pageTranslationRepository->getAll(['id', 'route']) as $translation) {
-            $routes[] = [
-                'id'       => (string) $translation->id,
-                'route'    => $translation->route,
-                'segments' => explode('/', $translation->route),
+        foreach ($this->repository->getAll(['id', 'route']) as $page) {
+            $this->routes[] = [
+                'id' => (string) $page->id,
+                ...$this->compile($page->route),
             ];
         }
 
-        usort(
-            $routes,
-            fn (array $a, array $b) => $this->routeOrderComparison(
-                $a['segments'],
-                $b['segments']
-            )
+        usort($this->routes, function ($a, $b) {
+            return $b['score'] <=> $a['score'];
+        });
+
+        return $this->routes;
+    }
+
+    private function compile(string $route): array
+    {
+        $route = '/' . trim($route, '/');
+
+        $params = [];
+        $score = 0;
+
+        $regex = preg_replace_callback(
+            '/\{([a-zA-Z_][a-zA-Z0-9_]*)(?::(int|slug|uuid))?\}/',
+            function ($m) use (&$params, &$score) {
+                $params[] = $m[1];
+                $score--;
+
+                return match ($m[2] ?? 'string') {
+                    'int' => '(?<' . $m[1] . '>\d+)',
+                    'slug' => '(?<' . $m[1] . '>[a-z0-9-]+)',
+                    'uuid' => '(?<' . $m[1] . '>[a-f0-9-]{36})',
+                    default => '(?<' . $m[1] . '>[^/]+)',
+                };
+            },
+            preg_quote($route, '#')
         );
 
-        return $this->compiledRoutes = $routes;
+        $regex = str_replace('\*', '(?<wildcard>.*)', $regex);
+
+        $score += substr_count($route, '/');
+        $score += substr_count($route, '{') * -5;
+
+        return [
+            'regex' => '#^' . $regex . '$#iu',
+            'params' => $params,
+            'score' => $score,
+        ];
     }
 
-    /**
-     * Normalize the incoming URL.
-     */
-    protected function normalizeUrl(string $url): string
+    private function normalize(string $url): string
     {
-        $path = parse_url($url, PHP_URL_PATH) ?? '/';
+        $path = parse_url($url, PHP_URL_PATH) ?: '/';
 
-        $path = rtrim($path, '/');
+        $path = '/' . trim($path, '/');
 
-        return $path === '' ? '/' : $path;
+        return $path === '//' ? '/' : rtrim($path, '/') ?: '/';
     }
 
-    /**
-     * Sort routes in the order they should be evaluated.
-     */
-    public function getRoutesInOrder(array $routes): array
+    public function generate(string $route, array $parameters = []): string
     {
-        usort($routes, [$this, 'routeOrderComparison']);
-
-        return $routes;
-    }
-
-    /**
-     * Compare two routes.
-     *
-     * Priority:
-     * 1. More segments first.
-     * 2. Fewer parameters first.
-     * 3. Wildcards last.
-     */
-    public function routeOrderComparison(array $route1, array $route2): int
-    {
-        $segmentComparison = count($route2) <=> count($route1);
-
-        if ($segmentComparison !== 0) {
-            return $segmentComparison;
+        foreach ($parameters as $key => $value) {
+            $route = preg_replace(
+                '/\{' . preg_quote($key, '/') . '(?::[^}]+)?\}/',
+                rawurlencode((string) $value),
+                $route
+            );
         }
 
-        $parameterComparison =
-            $this->countParameters($route1)
-            <=>
-            $this->countParameters($route2);
-
-        if ($parameterComparison !== 0) {
-            return $parameterComparison;
-        }
-
-        $route1Wildcard = end($route1) === '*';
-        $route2Wildcard = end($route2) === '*';
-
-        return $route1Wildcard <=> $route2Wildcard;
-    }
-
-    /**
-     * Count named parameters in a route.
-     */
-    protected function countParameters(array $route): int
-    {
-        return count(
-            array_filter(
-                $route,
-                fn (string $segment): bool => $this->isParameter($segment)
-            )
-        );
-    }
-
-    /**
-     * Determine if a route segment is a parameter.
-     */
-    protected function isParameter(string $segment): bool
-    {
-        return str_starts_with($segment, '{}')
-            ? false
-            : str_starts_with($segment, '{')
-                && str_ends_with($segment, '}');
-    }
-
-    /**
-     * Match URL segments against route segments.
-     *
-     * Returns route parameters if matched, otherwise null.
-     */
-    protected function matchRoute(
-        array $urlSegments,
-        array $routeSegments
-    ): ?array {
-        $isWildcardRoute = end($routeSegments) === '*';
-
-        if (!$isWildcardRoute && count($urlSegments) !== count($routeSegments)) {
-            return null;
-        }
-
-        if ($isWildcardRoute && count($urlSegments) < count($routeSegments) - 1) {
-            return null;
-        }
-
-        $parameters = [];
-
-        foreach ($routeSegments as $index => $routeSegment) {
-            if ($routeSegment === '*') {
-                return $parameters;
-            }
-
-            if (!isset($urlSegments[$index])) {
-                return null;
-            }
-
-            $urlSegment = $urlSegments[$index];
-
-            if ($this->isParameter($routeSegment)) {
-                $parameters[trim($routeSegment, '{}')] = $urlSegment;
-                continue;
-            }
-
-            if ($routeSegment !== $urlSegment) {
-                return null;
-            }
-        }
-
-        return $parameters;
+        return preg_replace('/\{[^}]+\}/', '', $route);
     }
 }
