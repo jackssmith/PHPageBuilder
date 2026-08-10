@@ -17,11 +17,11 @@ final readonly class Cache implements CacheContract
 {
     private const PAGE_FILE = 'page.html';
     private const META_FILE = 'meta.json';
-    private const CACHE_VERSION = 2;
+    private const CACHE_VERSION = 3;
 
     public function __construct(
         private string $cacheDirectory,
-        private int $maxDepth = 32,
+        private int $maxDepth = 256,
         private int $maxVariants = 64,
         private int $maxEntries = 10_000,
         private int $directoryPermissions = 0755,
