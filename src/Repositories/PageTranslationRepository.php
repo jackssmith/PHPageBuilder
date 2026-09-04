@@ -17,7 +17,7 @@ final class PageTranslationRepository extends BaseRepository implements PageTran
     protected string $table;
 
     /**
-     * The class that represents each page translation.
+     * The class that represents a page translation.
      */
     protected string $class;
 
@@ -30,31 +30,44 @@ final class PageTranslationRepository extends BaseRepository implements PageTran
     }
 
     /**
-     * Resolve the table name with fallback priority.
+     * Resolve the database table name.
+     *
+     * Priority:
+     * 1. Explicit constructor argument
+     * 2. Configuration value
+     * 3. Default table name
      */
     private function resolveTable(?string $table): string
     {
-        return $table
-            ?? phpb_config('page.translation.table')
-            ?? self::DEFAULT_TABLE;
+        $table = $table ?? phpb_config('page.translation.table');
+
+        if (!is_string($table) || trim($table) === '') {
+            return self::DEFAULT_TABLE;
+        }
+
+        return trim($table);
     }
 
     /**
-     * Resolve and validate the model class.
+     * Resolve and validate the page translation model class.
      *
-     * @throws RuntimeException
+     * @throws RuntimeException When the configured class is invalid.
      */
     private function resolveModelClass(): string
     {
         $class = phpb_instance('page.translation');
 
-        if (!is_string($class) || $class === '') {
-            throw new RuntimeException('Page translation class must be a non-empty string.');
+        if (!is_string($class) || trim($class) === '') {
+            throw new RuntimeException(
+                'The page translation model class must be a non-empty string.'
+            );
         }
+
+        $class = trim($class);
 
         if (!class_exists($class)) {
             throw new RuntimeException(sprintf(
-                'Invalid page translation class: "%s" does not exist.',
+                'The page translation model class "%s" does not exist.',
                 $class
             ));
         }
