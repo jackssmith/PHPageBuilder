@@ -22,7 +22,7 @@ final readonly class Cache implements CacheContract
     public function __construct(
         private string $cacheDirectory,
         private int $maxDepth = 64,
-        private int $maxVariants = 256,
+        private int $maxVariants = 32,
         private int $maxEntries = 10_000,
         private int $directoryPermissions = 0755,
         private int $filePermissions = 0644,
