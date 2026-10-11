@@ -12,12 +12,13 @@ use RecursiveDirectoryIterator;
 use RecursiveIteratorIterator;
 use RuntimeException;
 use Throwable;
+use InvalidArgumentException;
 
 final readonly class Cache implements CacheContract
 {
     private const PAGE_FILE = 'page.html';
     private const META_FILE = 'meta.json';
-    private const CACHE_VERSION = 4;
+    private const CACHE_VERSION = 5;
 
     public function __construct(
         private string $cacheDirectory,
@@ -28,19 +29,19 @@ final readonly class Cache implements CacheContract
         private int $filePermissions = 0644,
     ) {
         if ($this->maxDepth < 1) {
-            throw new \InvalidArgumentException(
+            throw new InvalidArgumentException(
                 'maxDepth must be greater than zero.'
             );
         }
 
         if ($this->maxVariants < 1) {
-            throw new \InvalidArgumentException(
+            throw new InvalidArgumentException(
                 'maxVariants must be greater than zero.'
             );
         }
 
         if ($this->maxEntries < 1) {
-            throw new \InvalidArgumentException(
+            throw new InvalidArgumentException(
                 'maxEntries must be greater than zero.'
             );
         }
@@ -60,21 +61,13 @@ final readonly class Cache implements CacheContract
             return null;
         }
 
-        $meta = $this->readMetadata($entry);
+        $metadata = $this->readMetadata($entry);
 
-        if ($meta === null) {
-            $this->remove($entry);
-
-            return null;
-        }
-
-        if (!$this->isValidMetadata($meta, $normalizedUrl)) {
-            $this->remove($entry);
-
-            return null;
-        }
-
-        if ($meta['expires_at'] <= time()) {
+        if (
+            $metadata === null
+            || !$this->isValidMetadata($metadata, $normalizedUrl)
+            || $metadata['expires_at'] <= time()
+        ) {
             $this->remove($entry);
 
             return null;
@@ -106,19 +99,21 @@ final readonly class Cache implements CacheContract
         }
 
         $normalizedUrl = $this->normalizeUrl($url);
-        $relative = $this->relativePath($normalizedUrl);
+        $entry = $this->path($normalizedUrl);
 
-        if (!$this->isCacheablePath($relative)) {
+        /*
+         * Do not let an existing entry bypass validation of
+         * the configured cache layout.
+         */
+        if (!$this->isCacheablePath($entry)) {
             return;
         }
 
-        $path = $this->absolutePath($relative);
-
-        $this->ensureDirectory($path);
+        $this->ensureDirectory($entry);
 
         $now = time();
 
-        $meta = [
+        $metadata = [
             'version'    => self::CACHE_VERSION,
             'url'        => $normalizedUrl,
             'created_at' => $now,
@@ -127,21 +122,25 @@ final readonly class Cache implements CacheContract
             'size'       => strlen($content),
         ];
 
+        /*
+         * Write the page first and metadata last. Metadata
+         * therefore acts as the entry's completion marker.
+         */
         $this->atomicWrite(
-            $path . DIRECTORY_SEPARATOR . self::PAGE_FILE,
+            $entry . DIRECTORY_SEPARATOR . self::PAGE_FILE,
             $content
         );
 
         $this->atomicWrite(
-            $path . DIRECTORY_SEPARATOR . self::META_FILE,
-            $this->encodeJson($meta)
+            $entry . DIRECTORY_SEPARATOR . self::META_FILE,
+            $this->encodeJson($metadata)
         );
 
-        $this->setPermissions($path);
+        $this->setPermissions($entry);
     }
 
     /**
-     * Invalidate all cached URLs matching a route pattern.
+     * Invalidate cached URLs matching a route pattern.
      *
      * Supported patterns:
      *
@@ -158,19 +157,23 @@ final readonly class Cache implements CacheContract
         }
 
         foreach ($this->entries() as $entry) {
-            $meta = $this->readMetadata($entry);
+            $metadata = $this->readMetadata($entry);
 
-            if ($meta === null) {
+            if ($metadata === null) {
                 $this->remove($entry);
+
                 continue;
             }
 
-            $url = $meta['url'] ?? null;
+            if (!$this->isValidMetadataStructure($metadata)) {
+                $this->remove($entry);
 
-            if (
-                is_string($url)
-                && $this->routeMatches($route, $url)
-            ) {
+                continue;
+            }
+
+            $url = $metadata['url'];
+
+            if ($this->routeMatches($route, $url)) {
                 $this->remove($entry);
             }
         }
@@ -182,9 +185,7 @@ final readonly class Cache implements CacheContract
     public function clearUrl(string $url): void
     {
         $this->remove(
-            $this->path(
-                $this->normalizeUrl($url)
-            )
+            $this->path($this->normalizeUrl($url))
         );
     }
 
@@ -193,15 +194,15 @@ final readonly class Cache implements CacheContract
      */
     public function clearAll(): void
     {
-        if (is_dir($this->cacheDirectory)) {
-            $this->remove($this->cacheDirectory);
-        }
-
         $this->ensureCacheDirectory();
+
+        foreach ($this->entries() as $entry) {
+            $this->remove($entry);
+        }
     }
 
     /**
-     * Check whether a valid cache entry exists.
+     * Check whether a valid, unexpired cache entry exists.
      */
     public function has(string $url): bool
     {
@@ -209,13 +210,9 @@ final readonly class Cache implements CacheContract
     }
 
     /**
-     * Get cached content or generate and cache it.
+     * Return cached content or generate and cache it.
      *
-     * Example:
-     *
-     * $html = $cache->remember('/about', 60, function () {
-     *     return renderAboutPage();
-     * });
+     * @throws RuntimeException If the callback does not return a string.
      */
     public function remember(
         string $url,
@@ -246,9 +243,9 @@ final readonly class Cache implements CacheContract
     }
 
     /**
-     * Remove expired cache entries.
+     * Remove expired or corrupt cache entries.
      *
-     * @return int Number of removed entries.
+     * @return int Number of entries removed.
      */
     public function pruneExpired(): int
     {
@@ -256,19 +253,16 @@ final readonly class Cache implements CacheContract
         $now = time();
 
         foreach ($this->entries() as $entry) {
-            $meta = $this->readMetadata($entry);
-
-            if ($meta === null) {
-                $this->remove($entry);
-                $removed++;
-                continue;
-            }
-
-            $expiresAt = $meta['expires_at'] ?? null;
+            $metadata = $this->readMetadata($entry);
 
             if (
-                !is_int($expiresAt)
-                || $expiresAt <= $now
+                $metadata === null
+                || !$this->isValidMetadataStructure($metadata)
+                || $metadata['expires_at'] <= $now
+                || !$this->isValidMetadata(
+                    $metadata,
+                    $metadata['url']
+                )
             ) {
                 $this->remove($entry);
                 $removed++;
@@ -296,37 +290,36 @@ final readonly class Cache implements CacheContract
         $now = time();
 
         foreach ($this->entries() as $entry) {
-            $meta = $this->readMetadata($entry);
+            $metadata = $this->readMetadata($entry);
 
-            if ($meta === null) {
+            if (
+                $metadata === null
+                || !$this->isValidMetadataStructure($metadata)
+            ) {
                 continue;
             }
 
             $entries++;
 
-            $size = $meta['size'] ?? null;
+            $page = $entry
+                . DIRECTORY_SEPARATOR
+                . self::PAGE_FILE;
 
-            if (is_int($size)) {
-                $bytes += $size;
-            } else {
-                $page = $entry
-                    . DIRECTORY_SEPARATOR
-                    . self::PAGE_FILE;
+            $size = $metadata['size'];
 
-                if (is_file($page)) {
-                    $fileSize = filesize($page);
+            if (is_file($page)) {
+                $actualSize = filesize($page);
 
-                    if ($fileSize !== false) {
-                        $bytes += $fileSize;
-                    }
+                if ($actualSize !== false) {
+                    $bytes += $actualSize;
+                } elseif (is_int($size)) {
+                    $bytes += $size;
                 }
+            } elseif (is_int($size)) {
+                $bytes += $size;
             }
 
-            if (
-                isset($meta['expires_at'])
-                && is_int($meta['expires_at'])
-                && $meta['expires_at'] <= $now
-            ) {
+            if ($metadata['expires_at'] <= $now) {
                 $expired++;
             }
         }
@@ -340,33 +333,17 @@ final readonly class Cache implements CacheContract
     }
 
     /**
-     * Build the filesystem path for a URL.
+     * Build the filesystem path for a normalized URL.
      */
     private function path(string $url): string
     {
+        $hash = hash('sha256', $this->normalizeUrl($url));
+
         return $this->absolutePath(
-            $this->relativePath($url)
-        );
-    }
-
-    /**
-     * Generate a sharded cache path.
-     *
-     * Example:
-     *
-     * ab/
-     * ab123456789...
-     */
-    private function relativePath(string $url): string
-    {
-        $hash = hash(
-            'sha256',
-            $this->normalizeUrl($url)
-        );
-
-        return substr($hash, 0, 2)
+            substr($hash, 0, 2)
             . DIRECTORY_SEPARATOR
-            . $hash;
+            . $hash
+        );
     }
 
     /**
@@ -377,13 +354,14 @@ final readonly class Cache implements CacheContract
         return rtrim(
             $this->cacheDirectory,
             '/\\'
-        )
-            . DIRECTORY_SEPARATOR
-            . ltrim($relative, '/\\');
+        ) . DIRECTORY_SEPARATOR . ltrim($relative, '/\\');
     }
 
     /**
-     * Normalize a URL without destroying query-string semantics.
+     * Normalize a URL while preserving its query string.
+     *
+     * Fragments are ignored because browsers do not normally
+     * send URL fragments to the server.
      */
     private function normalizeUrl(string $url): string
     {
@@ -395,35 +373,21 @@ final readonly class Cache implements CacheContract
 
         $parts = parse_url($url);
 
-        /*
-         * If parse_url cannot understand the value, fall back
-         * to a conservative normalization.
-         */
         if ($parts === false) {
             return $this->normalizePath($url);
         }
 
-        $path = $parts['path'] ?? '/';
+        $path = $this->normalizePath($parts['path'] ?? '/');
 
-        $path = $this->normalizePath($path);
-
-        if (isset($parts['query'])) {
-            $query = trim($parts['query']);
-
-            if ($query !== '') {
-                $path .= '?' . $query;
-            }
+        if (isset($parts['query']) && $parts['query'] !== '') {
+            $path .= '?' . $parts['query'];
         }
 
-        /*
-         * Fragments are intentionally ignored because they are
-         * client-side and are not normally sent to the server.
-         */
         return $path;
     }
 
     /**
-     * Normalize only the path portion of a URL.
+     * Normalize a URL path.
      */
     private function normalizePath(string $path): string
     {
@@ -433,17 +397,9 @@ final readonly class Cache implements CacheContract
             return '/';
         }
 
-        $path = preg_replace(
-            '#/+#',
-            '/',
-            $path
-        ) ?? $path;
+        $path = preg_replace('#/+#', '/', $path) ?? $path;
 
-        $path = '/' . trim($path, '/');
-
-        return $path === ''
-            ? '/'
-            : $path;
+        return '/' . trim($path, '/');
     }
 
     /**
@@ -458,8 +414,7 @@ final readonly class Cache implements CacheContract
         }
 
         /*
-         * Route invalidation is path-based. Query parameters
-         * are not treated as part of the route pattern.
+         * Route patterns match paths, not query parameters.
          */
         $route = explode('?', $route, 2)[0];
 
@@ -467,48 +422,27 @@ final readonly class Cache implements CacheContract
     }
 
     /**
-     * Determine whether a URL matches a route pattern.
+     * Determine whether a URL path matches a route pattern.
      *
-     * Examples:
-     *
-     * /blog/{id}      -> /blog/123
-     * /users/{id}/*   -> /users/42/posts/hello
-     * /about          -> /about
+     * Placeholders match exactly one path segment.
+     * A wildcard matches zero or more characters, including "/".
      */
     private function routeMatches(
         string $route,
         string $url
     ): bool {
-        $route = $this->normalizeRoute($route);
-
-        if ($route === null) {
-            return false;
-        }
-
         $url = $this->normalizeUrl($url);
-
-        /*
-         * Route matching only considers the path.
-         */
         $urlPath = explode('?', $url, 2)[0];
 
-        $quoted = preg_quote(
-            $route,
-            '#'
-        );
+        $quoted = preg_quote($route, '#');
 
-        /*
-         * Replace escaped route tokens after quoting.
-         */
-        $pattern = preg_replace(
-            [
-                '/\\\\\{[^}]+\\\\\}/',
-                '/\\\\\*/',
-            ],
-            [
-                '[^/]+',
-                '.*',
-            ],
+        $pattern = preg_replace_callback(
+            '/\\\\\{[^{}]+\\\\\}|\\\\\*/',
+            static function (array $matches): string {
+                return $matches[0] === '\\*'
+                    ? '.*'
+                    : '[^/]+';
+            },
             $quoted
         );
 
@@ -517,33 +451,30 @@ final readonly class Cache implements CacheContract
         }
 
         return preg_match(
-            '#^' . $pattern . '$#',
+            '#^' . $pattern . '$#D',
             $urlPath
         ) === 1;
     }
 
     /**
-     * Read and validate cache metadata.
+     * Read metadata from a cache entry.
      */
-    private function readMetadata(
-        string $path
-    ): ?array {
-        $file = $path
-            . DIRECTORY_SEPARATOR
-            . self::META_FILE;
+    private function readMetadata(string $entry): ?array
+    {
+        $file = $entry . DIRECTORY_SEPARATOR . self::META_FILE;
 
         if (!is_file($file) || !is_readable($file)) {
             return null;
         }
 
-        $contents = file_get_contents($file);
+        $contents = @file_get_contents($file);
 
         if ($contents === false || $contents === '') {
             return null;
         }
 
         try {
-            $data = json_decode(
+            $metadata = json_decode(
                 $contents,
                 true,
                 512,
@@ -553,51 +484,48 @@ final readonly class Cache implements CacheContract
             return null;
         }
 
-        return is_array($data)
-            ? $data
-            : null;
+        return is_array($metadata) ? $metadata : null;
     }
 
     /**
-     * Validate the structure and identity of metadata.
+     * Validate metadata structure and required field types.
+     */
+    private function isValidMetadataStructure(array $metadata): bool
+    {
+        return isset(
+            $metadata['version'],
+            $metadata['url'],
+            $metadata['created_at'],
+            $metadata['updated_at'],
+            $metadata['expires_at'],
+            $metadata['size']
+        )
+            && is_int($metadata['version'])
+            && is_string($metadata['url'])
+            && is_int($metadata['created_at'])
+            && is_int($metadata['updated_at'])
+            && is_int($metadata['expires_at'])
+            && is_int($metadata['size'])
+            && $metadata['created_at'] >= 0
+            && $metadata['updated_at'] >= $metadata['created_at']
+            && $metadata['expires_at'] >= $metadata['created_at']
+            && $metadata['size'] >= 0;
+    }
+
+    /**
+     * Validate metadata against the requested URL.
      */
     private function isValidMetadata(
-        array $meta,
+        array $metadata,
         string $normalizedUrl
     ): bool {
-        if (
-            ($meta['version'] ?? null)
-            !== self::CACHE_VERSION
-        ) {
-            return false;
-        }
-
-        if (
-            ($meta['url'] ?? null)
-            !== $normalizedUrl
-        ) {
-            return false;
-        }
-
-        if (
-            !isset($meta['created_at'])
-            || !is_int($meta['created_at'])
-        ) {
-            return false;
-        }
-
-        if (
-            !isset($meta['expires_at'])
-            || !is_int($meta['expires_at'])
-        ) {
-            return false;
-        }
-
-        return true;
+        return $this->isValidMetadataStructure($metadata)
+            && $metadata['version'] === self::CACHE_VERSION
+            && $metadata['url'] === $normalizedUrl;
     }
 
     /**
-     * Atomically write a file.
+     * Atomically write a file using a temporary file.
      */
     private function atomicWrite(
         string $file,
@@ -607,15 +535,14 @@ final readonly class Cache implements CacheContract
 
         $this->ensureDirectory($directory);
 
-        $tmp = sprintf(
-            '%s.%s.tmp',
-            $file,
-            bin2hex(random_bytes(16))
-        );
+        $temporaryFile = $file
+            . '.'
+            . bin2hex(random_bytes(16))
+            . '.tmp';
 
         try {
-            $written = file_put_contents(
-                $tmp,
+            $written = @file_put_contents(
+                $temporaryFile,
                 $contents,
                 LOCK_EX
             );
@@ -625,32 +552,26 @@ final readonly class Cache implements CacheContract
                 || $written !== strlen($contents)
             ) {
                 throw new RuntimeException(
-                    sprintf(
-                        'Unable to write cache file: %s',
-                        $file
-                    )
+                    sprintf('Unable to write cache file: %s', $file)
                 );
             }
 
-            $this->setPermissions($tmp);
+            $this->setPermissions($temporaryFile);
 
-            if (!rename($tmp, $file)) {
+            if (!@rename($temporaryFile, $file)) {
                 throw new RuntimeException(
-                    sprintf(
-                        'Unable to finalize cache file: %s',
-                        $file
-                    )
+                    sprintf('Unable to finalize cache file: %s', $file)
                 );
             }
         } finally {
-            if (is_file($tmp)) {
-                @unlink($tmp);
+            if (is_file($temporaryFile) || is_link($temporaryFile)) {
+                @unlink($temporaryFile);
             }
         }
     }
 
     /**
-     * Read a cache file.
+     * Read a cached file.
      */
     private function read(string $file): ?string
     {
@@ -658,29 +579,27 @@ final readonly class Cache implements CacheContract
             return null;
         }
 
-        $contents = file_get_contents($file);
+        $contents = @file_get_contents($file);
 
-        return $contents === false
-            ? null
-            : $contents;
+        return $contents === false ? null : $contents;
     }
 
     /**
-     * JSON encode metadata safely.
+     * Encode metadata as JSON.
      */
-    private function encodeJson(array $data): string
+    private function encodeJson(array $metadata): string
     {
         try {
             return json_encode(
-                $data,
+                $metadata,
                 JSON_THROW_ON_ERROR
                 | JSON_UNESCAPED_SLASHES
                 | JSON_UNESCAPED_UNICODE
             );
-        } catch (JsonException $e) {
+        } catch (JsonException $exception) {
             throw new RuntimeException(
                 'Unable to encode cache metadata.',
-                previous: $e
+                previous: $exception
             );
         }
     }
@@ -688,34 +607,36 @@ final readonly class Cache implements CacheContract
     /**
      * Determine whether a cache entry can be created.
      */
-    private function isCacheablePath(
-        string $path
-    ): bool {
-        /*
-         * The hashed cache layout normally has only one
-         * directory separator, but keep the depth protection
-         * for compatibility/custom layouts.
-         */
+    private function isCacheablePath(string $entry): bool
+    {
+        $relative = substr(
+            $entry,
+            strlen(rtrim($this->cacheDirectory, '/\\')) + 1
+        );
+
         if (
             substr_count(
-                str_replace('\\', '/', $path),
+                str_replace('\\', '/', $relative),
                 '/'
             ) > $this->maxDepth
         ) {
             return false;
         }
 
-        $parent = dirname(
-            $this->absolutePath($path)
-        );
-
-        if (!is_dir($parent)) {
+        /*
+         * An existing entry can be updated even when the cache
+         * has reached its global entry limit.
+         */
+        if (is_dir($entry)) {
             return true;
         }
 
-        /*
-         * Prevent an individual shard from growing forever.
-         */
+        $parent = dirname($entry);
+
+        if (!is_dir($parent)) {
+            return $this->countEntries() < $this->maxEntries;
+        }
+
         try {
             $variants = 0;
 
@@ -725,32 +646,23 @@ final readonly class Cache implements CacheContract
                     FilesystemIterator::SKIP_DOTS
                 ) as $item
             ) {
-                if (!$item->isDir()) {
-                    continue;
-                }
-
-                $variants++;
-
-                if ($variants >= $this->maxVariants) {
-                    return false;
+                if ($item->isDir()) {
+                    $variants++;
                 }
             }
         } catch (Throwable) {
             return false;
         }
 
-        /*
-         * Optional global cache-size protection.
-         */
-        if ($this->countEntries() >= $this->maxEntries) {
+        if ($variants >= $this->maxVariants) {
             return false;
         }
 
-        return true;
+        return $this->countEntries() < $this->maxEntries;
     }
 
     /**
-     * Return all cache entry directories.
+     * Return cache entry directories.
      *
      * @return iterable<string>
      */
@@ -767,17 +679,19 @@ final readonly class Cache implements CacheContract
             );
 
             foreach ($shards as $shard) {
-                if (!$shard->isDir()) {
+                if (!$shard->isDir() || $shard->isLink()) {
                     continue;
                 }
 
-                foreach (
-                    new FilesystemIterator(
-                        $shard->getPathname(),
-                        FilesystemIterator::SKIP_DOTS
-                    ) as $entry
-                ) {
-                    if ($entry->isDir()) {
+                $shardPath = $shard->getPathname();
+
+                $hashEntries = new FilesystemIterator(
+                    $shardPath,
+                    FilesystemIterator::SKIP_DOTS
+                );
+
+                foreach ($hashEntries as $entry) {
+                    if ($entry->isDir() && !$entry->isLink()) {
                         yield $entry->getPathname();
                     }
                 }
@@ -788,7 +702,7 @@ final readonly class Cache implements CacheContract
     }
 
     /**
-     * Count existing cache entries.
+     * Count existing cache entries, stopping at the configured limit.
      */
     private function countEntries(): int
     {
@@ -808,15 +722,14 @@ final readonly class Cache implements CacheContract
     /**
      * Ensure a directory exists.
      */
-    private function ensureDirectory(
-        string $directory
-    ): void {
+    private function ensureDirectory(string $directory): void
+    {
         if (is_dir($directory)) {
             return;
         }
 
         if (
-            !mkdir(
+            !@mkdir(
                 $directory,
                 $this->directoryPermissions,
                 true
@@ -824,12 +737,11 @@ final readonly class Cache implements CacheContract
             && !is_dir($directory)
         ) {
             throw new RuntimeException(
-                sprintf(
-                    'Unable to create cache directory: %s',
-                    $directory
-                )
+                sprintf('Unable to create cache directory: %s', $directory)
             );
         }
+
+        $this->setPermissions($directory);
     }
 
     /**
@@ -837,17 +749,15 @@ final readonly class Cache implements CacheContract
      */
     private function ensureCacheDirectory(): void
     {
-        $this->ensureDirectory(
-            $this->cacheDirectory
-        );
+        $this->ensureDirectory($this->cacheDirectory);
     }
 
     /**
-     * Apply configured file/directory permissions.
+     * Apply configured permissions.
      */
     private function setPermissions(string $path): void
     {
-        if (!file_exists($path)) {
+        if (!file_exists($path) || is_link($path)) {
             return;
         }
 
@@ -860,50 +770,62 @@ final readonly class Cache implements CacheContract
     }
 
     /**
-     * Safely remove a file or directory inside the cache root.
+     * Safely remove a file or directory contained in the cache root.
+     *
+     * Symbolic links are unlinked rather than traversed.
      */
     private function remove(string $path): void
     {
-        if (!file_exists($path) && !is_link($path)) {
-            return;
-        }
-
         $root = realpath($this->cacheDirectory);
 
         if ($root === false) {
             return;
         }
 
-        $real = realpath($path);
+        /*
+         * Handle a symbolic link before realpath(), because
+         * realpath() resolves links to their targets.
+         */
+        if (is_link($path)) {
+            $parent = realpath(dirname($path));
 
-        if ($real === false) {
+            if (
+                $parent !== false
+                && $this->isWithinRoot($parent, $root)
+            ) {
+                @unlink($path);
+            }
+
             return;
         }
 
-        /*
-         * Never allow this cache class to delete something
-         * outside of its configured cache directory.
-         */
+        if (!file_exists($path)) {
+            return;
+        }
+
+        $realPath = realpath($path);
+
         if (
-            $real !== $root
-            && !str_starts_with(
-                $real . DIRECTORY_SEPARATOR,
-                $root . DIRECTORY_SEPARATOR
-            )
+            $realPath === false
+            || !$this->isWithinRoot($realPath, $root)
         ) {
             return;
         }
 
-        if (is_file($real) || is_link($real)) {
-            @unlink($real);
+        if (is_file($realPath)) {
+            @unlink($realPath);
 
+            return;
+        }
+
+        if (!is_dir($realPath)) {
             return;
         }
 
         try {
             $iterator = new RecursiveIteratorIterator(
                 new RecursiveDirectoryIterator(
-                    $real,
+                    $realPath,
                     FilesystemIterator::SKIP_DOTS
                 ),
                 RecursiveIteratorIterator::CHILD_FIRST
@@ -912,7 +834,12 @@ final readonly class Cache implements CacheContract
             foreach ($iterator as $item) {
                 $pathname = $item->getPathname();
 
-                if ($item->isLink() || $item->isFile()) {
+                /*
+                 * Never traverse symbolic links during cleanup.
+                 */
+                if ($item->isLink()) {
+                    @unlink($pathname);
+                } elseif ($item->isFile()) {
                     @unlink($pathname);
                 } elseif ($item->isDir()) {
                     @rmdir($pathname);
@@ -920,10 +847,23 @@ final readonly class Cache implements CacheContract
             }
         } catch (Throwable) {
             /*
-             * Cache cleanup should never break page rendering.
+             * Cache cleanup failures should not interrupt rendering.
              */
         }
 
-        @rmdir($real);
+        @rmdir($realPath);
+    }
+
+    /**
+     * Check whether a path is the root or is inside it.
+     */
+    private function isWithinRoot(string $path, string $root): bool
+    {
+        return $path === $root
+            || str_starts_with(
+                $path,
+                rtrim($root, DIRECTORY_SEPARATOR)
+                . DIRECTORY_SEPARATOR
+            );
     }
 }
