@@ -1,41 +1,58 @@
 <?php
 
+declare(strict_types=1);
+
 namespace PHPageBuilder\Contracts;
 
 interface RouterContract
 {
     /**
-     * Return the page corresponding to the given URL.
+     * Resolve a URL to its corresponding page translation.
      *
-     * @param $url
-     * @return PageTranslationContract|null
+     * @param string $url The URL to resolve.
+     *
+     * @return PageTranslationContract|null The matching page translation,
+     *                                       or null if no match is found.
      */
-    public function resolve($url);
+    public function resolve(string $url): ?PageTranslationContract;
 
     /**
-     * Return the full page translation instance based on the given matched route or page translation id.
-     * (this method is helpful when extending a router to perform additional checks after a route has been matched)
+     * Retrieve a page translation using the matched route and its ID.
      *
-     * @param string $matchedRoute                  the matched route
-     * @param string $matchedPageTranslationId      the page translation id corresponding to the matched route
-     * @return PageTranslationContract|null
+     * This method allows custom routers to perform additional validation
+     * after a route has been matched.
+     *
+     * @param string $matchedRoute The matched route.
+     * @param string $matchedPageTranslationId The ID of the matched page translation.
+     *
+     * @return PageTranslationContract|null The matching page translation,
+     *                                       or null if no match is found.
      */
-    public function getMatchedPage(string $matchedRoute, string $matchedPageTranslationId);
+    public function getMatchedPage(
+        string $matchedRoute,
+        string $matchedPageTranslationId
+    ): ?PageTranslationContract;
 
     /**
-     * Order the given routes into the order in which they need to be evaluated.
+     * Sort routes in the order in which they should be evaluated.
      *
-     * @param $allRoutes
-     * @return array
+     * @param array $allRoutes The routes to sort.
+     *
+     * @return array The routes sorted by evaluation priority.
      */
-    public function getRoutesInOrder($allRoutes);
+    public function getRoutesInOrder(array $allRoutes): array;
 
     /**
-     * Compare two given routes and return -1,0,1 indicating which route should be evaluated first.
+     * Compare two routes to determine their evaluation priority.
      *
-     * @param $route1
-     * @param $route2
-     * @return int
+     * Return -1 if the first route should be evaluated first,
+     * 0 if both routes have equal priority, or 1 if the second
+     * route should be evaluated first.
+     *
+     * @param string $route1 The first route.
+     * @param string $route2 The second route.
+     *
+     * @return int The comparison result: -1, 0, or 1.
      */
-    public function routeOrderComparison($route1, $route2);
+    public function routeOrderComparison(string $route1, string $route2): int;
 }
