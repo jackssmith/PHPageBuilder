@@ -53,7 +53,7 @@ interface AuthContract
      */
     public function handleRequest(
         ServerRequestInterface $request,
-        ?string $action = null
+        ?string $action = true
     ): ResponseInterface;
 
     /**
